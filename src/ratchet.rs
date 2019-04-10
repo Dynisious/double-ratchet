@@ -144,7 +144,7 @@ mod tests {
   fn test_ratchet_output() {
     use std::collections::HashSet;
 
-    const OUT_LEN: usize = 64;
+    const OUT_LEN: usize = 256;
 
     let mut ratchet1 = Ratchet::<Sha1,>::from_bytes(&mut [],);
     let mut ratchet2 = Ratchet::<Sha1,>::new(
@@ -154,8 +154,12 @@ mod tests {
     assert_eq!(&ratchet1.state, &ratchet2.state, "Initial states are not the same",);
 
     let mut outputs = HashSet::new();
+    #[cfg(features = "test-large-output",)]
+    const ROUNDS: usize = 10000;
+    #[cfg(not(features = "test-output",),)]
+    const ROUNDS: usize = 100;
 
-    for _ in 1..=10000 {
+    for _ in 1..=ROUNDS {
       let out1 = ratchet1.advance(OUT_LEN,)
         .expect("Error advancing ratchet1");
       let out2 = ratchet2.advance(OUT_LEN,)

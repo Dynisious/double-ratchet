@@ -9,5 +9,6 @@
 extern crate maybe;
 
 mod ratchet;
+pub mod message;
 
 pub use self::ratchet::*;

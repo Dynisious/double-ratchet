@@ -5,6 +5,9 @@ version = "0.1.0"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
 
+[features]
+test-large-data = []
+
 [dependencies]
 x25519-dalek = "0.5.2"
 hkdf = "0.7.0"
