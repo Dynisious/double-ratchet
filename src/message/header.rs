@@ -16,7 +16,7 @@ use std::{io::{self, Write,}, convert::TryInto,};
  */
 
 /// The headers tagged with a message.
-#[derive(Debug,)]
+#[derive(Clone, Copy, Debug,)]
 pub struct Header {
   /// The `PublicKey` of the communication partner.
   pub public_key: PublicKey,
@@ -104,6 +104,17 @@ impl PartialEq for Header {
 }
 
 impl Eq for Header {}
+
+impl Default for Header {
+  #[inline]
+  fn default() -> Self {
+    Self {
+      public_key: [0; 32].into(),
+      message_index: 0,
+      previous_step: 0,
+    }
+  }
+}
 
 #[cfg(test,)]
 mod tests {

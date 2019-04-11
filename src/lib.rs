@@ -1,7 +1,7 @@
 //! An implementation of the double ratchet algorithm.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-10
+//! Last Moddified --- 2019-04-11
 
 #![deny(missing_docs,)]
 
@@ -10,5 +10,6 @@ extern crate maybe;
 
 mod ratchet;
 pub mod message;
+mod client;
 
-pub use self::ratchet::*;
+pub use self::{ratchet::*, client::*,};

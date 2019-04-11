@@ -11,9 +11,9 @@ test-large-data = []
 [dependencies]
 x25519-dalek = "0.5.2"
 hkdf = "0.7.0"
-aes = "0.3.2"
+ring = "0.14.6"
 digest = "0.8.0"
-typenum = "1.10.0"
+generic-array = "0.12.0"
 maybe = { version = "0.1.0", git = "https://github.com/Dynisious/maybe.git" }
 clear_on_drop = "0.2.3"
 

@@ -5,7 +5,7 @@
 
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
-use typenum::{consts, Unsigned,};
+use generic_array::typenum::{consts, Unsigned,};
 use clear_on_drop::ClearOnDrop;
 use std::{iter, marker::PhantomData,};
 
@@ -89,6 +89,7 @@ impl<D, R,> Ratchet<D, R,>
     let (ikm, salt,) = self.state.split_at_mut(<D::BlockSize as Unsigned>::USIZE,);
     let mut msalt = maybe!(!salt.is_empty() => &*salt);
 
+    //Perform hashing rounds.
     for _ in 0..R::USIZE {
       //Perform the HKDF round.
       Hkdf::<D>::extract(msalt.take().map(move |v,| &*v,), ikm,)

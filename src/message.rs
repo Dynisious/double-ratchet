@@ -19,7 +19,7 @@ pub use self::header::*;
  */
 
 /// A `Message` is a message [Header] and associated data.
-#[derive(PartialEq, Eq, Debug,)]
+#[derive(PartialEq, Eq, Clone, Debug,)]
 pub struct Message {
   /// The `Message` [Header].
   pub header: Header,
