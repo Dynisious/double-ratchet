@@ -1,12 +1,10 @@
 //! An implementation of the double ratchet algorithm.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-11
+//! Last Moddified --- 2019-04-19
 
 #![deny(missing_docs,)]
-
-#[macro_use]
-extern crate maybe;
+#![feature(const_fn,)]
 
 mod ratchet;
 pub mod message;

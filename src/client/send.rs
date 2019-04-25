@@ -1,61 +1,58 @@
 //! Defines the sending half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-11
+//! Last Moddified --- 2019-04-20
 
+use super::aead::Algorithm;
 use crate::{Ratchet, message::{Message, Header,},};
-use x25519_dalek::PublicKey;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
-use ring::{
-  aead::{self, SealingKey, Nonce, Aad, Algorithm,},
-  error::Unspecified,
-};
-use generic_array::{
-  ArrayLength,
-  typenum::{consts, Unsigned,},
-};
+use x25519_dalek::PublicKey;
+use ring::{aead::{self, SealingKey, Nonce, Aad,}, error::Unspecified,};
+use generic_array::{ArrayLength, typenum::{consts, Unsigned,},};
 use clear_on_drop::ClearOnDrop;
 use std::marker::PhantomData;
 
-/// The sending half of a [Client].
-pub struct SendClient<D, Rounds = consts::U1, AadLength = consts::U0,> {
-  ratchet: Ratchet<D, Rounds,>,
+// mod serde;
+
+/// The sending half of a Client.
+pub(crate) struct SendClient<Algorithm, Digest, Rounds = consts::U1, AadLength = consts::U0,> {
+  ratchet: Ratchet<Digest, Rounds,>,
   next_header: Header,
-  algorithm: &'static Algorithm,
-  _phantom: PhantomData<AadLength>,
+  _phantom: PhantomData<(Algorithm, AadLength,)>,
 }
 
-impl<D, R, L,> SendClient<D, R, L,> {
+impl<A, D, R, L,> SendClient<A, D, R, L,>
+  where A: Algorithm, {
   /// Creates a new `SendClient` with no history.
   /// 
   /// # Params
   /// 
   /// ratchet --- The `Ratchet` to use to generate encryption data.  
   /// public_key --- The current public key being send.  
-  /// algorithm --- The symmetric `Algorithm` to use.  
-  pub fn new(ratchet: Ratchet<D, R,>, public_key: PublicKey, algorithm: &'static Algorithm,) -> Self {
+  pub fn new(ratchet: Ratchet<D, R,>, public_key: PublicKey,) -> Self {
+    let next_header = Header {
+      public_key,
+      message_index: 0,
+      previous_step: 0,
+    };
+    
     Self {
-      ratchet, algorithm,
-      next_header: Header {
-        public_key,
-        message_index: 0,
-        previous_step: 0,
-      },
+      ratchet, next_header,
       _phantom: PhantomData,
     }
   }
   /// The number of messages sent.
   #[inline]
-  pub fn sent_count(&self,) -> usize { self.next_header.message_index }
+  pub fn sent_count(&self,) -> u32 { self.next_header.message_index }
   /// The maxmimum message length.
   #[inline]
-  pub fn max_message_length(&self,) -> usize {
-    std::usize::MAX - self.algorithm.tag_len()
+  pub const fn max_message_length(&self,) -> usize {
+    std::usize::MAX - std::mem::size_of::<A::TAG_BYTES>()
   }
 }
 
-impl<D, R, L,> SendClient<D, R, L,>
-  where D: Input + BlockInput + FixedOutput + Reset + Clone + Default,
+impl<A, D, R, L,> SendClient<A, D, R, L,>
+  where A: Algorithm, D: Input + BlockInput + FixedOutput + Reset + Clone + Default,
     <D as BlockInput>::BlockSize: Clone,
     R: Unsigned, L: ArrayLength<u8>, {
   /// Finish the current round step and start the next one.
@@ -79,6 +76,7 @@ impl<D, R, L,> SendClient<D, R, L,>
   pub fn send(&mut self, message: &mut [u8],) -> Result<Message, Unspecified> {
     use std::{mem, iter,};
 
+    let algorithm = A::algorithm();
     //Clear the message data once used.
     let message = ClearOnDrop::new(message,);
     //Get the message header.
@@ -101,14 +99,14 @@ impl<D, R, L,> SendClient<D, R, L,>
       if message.len() <= self.max_message_length() { return Err(Unspecified) };
 
       message.iter().cloned()
-        .chain(iter::repeat(0,).take(self.algorithm.tag_len(),),)
+        .chain(iter::repeat(0,).take(algorithm.tag_len(),),)
         .collect::<Box<_>>()
     };
     //Clear the message data once done.
     let mut message = ClearOnDrop::new(&mut message,);
     //Calculate the length of the sealing data needed.
-    let length = self.algorithm.key_len()
-      + self.algorithm.nonce_len()
+    let length = algorithm.key_len()
+      + algorithm.nonce_len()
       + L::USIZE;
     //Calculate the sealing data.
     let mut sealing_data = self.ratchet.advance(length,)
@@ -117,15 +115,15 @@ impl<D, R, L,> SendClient<D, R, L,>
     let mut sealing_data = ClearOnDrop::new(&mut sealing_data,);
     //Get the sealing key.
     let (sealing_key, sealing_data,) = {
-      let (sealing_key, sealing_data,) = (*sealing_data).split_at_mut(self.algorithm.key_len(),);
+      let (sealing_key, sealing_data,) = (*sealing_data).split_at_mut(algorithm.key_len(),);
       let sealing_key = ClearOnDrop::new(sealing_key,);
-      let sealing_key = SealingKey::new(self.algorithm, &*sealing_key,)?;
+      let sealing_key = SealingKey::new(algorithm, &*sealing_key,)?;
       
       (sealing_key, sealing_data,)
     };
     //Get the nonce.
     let (nonce, sealing_data,) = {
-      let (nonce, sealing_data,) = sealing_data.split_at_mut(self.algorithm.nonce_len(),);
+      let (nonce, sealing_data,) = sealing_data.split_at_mut(algorithm.nonce_len(),);
       let nonce = ClearOnDrop::new(nonce,);
       let mut nonce = unsafe { *(&*nonce as *const _ as *const [u8; 12]) };
       let nonce = ClearOnDrop::new(&mut nonce,);
@@ -141,7 +139,7 @@ impl<D, R, L,> SendClient<D, R, L,>
       nonce,
       aad,
       &mut *message,
-      self.algorithm.tag_len(),
+      algorithm.tag_len(),
     )?;
 
     Ok(Message {
@@ -151,11 +149,18 @@ impl<D, R, L,> SendClient<D, R, L,>
   }
 }
 
-impl<D, R, L,> Drop for SendClient<D, R, L,> {
+impl<A, D, R, L,> Drop for SendClient<A, D, R, L,> {
   #[inline]
   fn drop(&mut self,) {
     ClearOnDrop::new(&mut self.next_header,);
   }
+}
+
+pub(crate) fn cmp<A, D, R, L,>(lhs: &SendClient<A, D, R, L,>, rhs: &SendClient<A, D, R, L,>,) -> bool {
+  use crate::ratchet;
+
+  ratchet::cmp(&lhs.ratchet, &rhs.ratchet,)
+  && lhs.next_header == rhs.next_header
 }
 
 #[cfg(test,)]
@@ -164,10 +169,6 @@ mod tests {
 
   #[test]
   fn test_send_client() {
-    unimplemented!()
-  }
-  #[test]
-  fn test_send_client_serde() {
     unimplemented!()
   }
 }

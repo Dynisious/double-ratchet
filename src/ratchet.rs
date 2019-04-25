@@ -1,7 +1,7 @@
 //! Defines the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-10
+//! Last Moddified --- 2019-04-20
 
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
@@ -9,11 +9,13 @@ use generic_array::typenum::{consts, Unsigned,};
 use clear_on_drop::ClearOnDrop;
 use std::{iter, marker::PhantomData,};
 
+// mod serde;
+
 /// A HKDF Ratchet which can be used to produce cyptographically secure sudo random bytes.
-pub struct Ratchet<D, Rounds = consts::U1,> {
+pub struct Ratchet<Digest, Rounds = consts::U1,> {
   /// The internal state used to produce the next sudo random bytes.
   state: ClearOnDrop<Box<[u8]>>,
-  _phantom: PhantomData<(D, Rounds,)>,
+  _phantom: PhantomData<(Digest, Rounds,)>,
 }
 
 impl<D, R,> Ratchet<D, R,>
@@ -87,7 +89,8 @@ impl<D, R,> Ratchet<D, R,>
     //---Perform rounds of hashing---
     //Initialise the input fields. 
     let (ikm, salt,) = self.state.split_at_mut(<D::BlockSize as Unsigned>::USIZE,);
-    let mut msalt = maybe!(!salt.is_empty() => &*salt);
+    let mut msalt = if salt.is_empty() { return Err(()) }
+      else { Some(&*salt) };
 
     //Perform hashing rounds.
     for _ in 0..R::USIZE {
@@ -99,7 +102,8 @@ impl<D, R,> Ratchet<D, R,>
       //Update the inputs.
       ikm.copy_from_slice(&data[..ikm.len()],);
       salt.copy_from_slice(&data[ikm.len()..],);
-      msalt = maybe!(!salt.is_empty() => salt);
+      msalt = if salt.is_empty() { return Err(()) }
+        else { Some(salt) };
     }
 
     //Allocate extra data such that there will be `out_len` extra bytes.
@@ -117,6 +121,11 @@ impl<D, R,> Ratchet<D, R,>
     data.truncate(out_len,);
     Ok(data)
   }
+}
+
+#[inline]
+pub(crate) fn cmp<D, R,>(lhs: &Ratchet<D, R,>, rhs: &Ratchet<D, R,>,) -> bool {
+  lhs.state == rhs.state
 }
 
 #[cfg(test,)]
