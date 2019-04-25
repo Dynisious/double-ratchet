@@ -7,11 +7,11 @@ use super::aead::Algorithm;
 use crate::Ratchet;
 use generic_array::{GenericArray, ArrayLength, typenum::consts,};
 use x25519_dalek::PublicKey;
-use ring::aead::{self, OpeningKey, Nonce, Aad,};
+
 use clear_on_drop::ClearOnDrop;
 use std::{collections::HashMap, ops::{Deref, DerefMut},};
 
-// mod serde;
+mod serde;
 
 /// The array type for a Diffie-Hellman PublicKey.
 type KeyArray = [u8; 32];
@@ -19,10 +19,6 @@ type KeyArray = [u8; 32];
 /// The receiving half of a Client.
 pub(crate) struct ReceiveClient<Algorithm, Digest, Rounds = consts::U1, AadLength = consts::U0,> 
   where Algorithm: super::aead::Algorithm,
-    Algorithm::KEY_BYTES: DerefMut,
-    <Algorithm::KEY_BYTES as Deref>::Target: Default,
-    Algorithm::NONCE_BYTES: DerefMut,
-    <Algorithm::NONCE_BYTES as Deref>::Target: Default,
     AadLength: ArrayLength<u8>, {
   ratchet: Ratchet<Digest, Rounds,>,
   sent_count: usize,
@@ -31,46 +27,39 @@ pub(crate) struct ReceiveClient<Algorithm, Digest, Rounds = consts::U1, AadLengt
   previous_keys: HashMap<KeyArray, HashMap<usize, OpenData<Algorithm, AadLength,>>>,
 }
 
-struct OpenData<Algorithm, AadLength,>
+struct OpenData<Algorithm, AadLength = consts::U0,>
   where Algorithm: super::aead::Algorithm,
-    Algorithm::KEY_BYTES: DerefMut,
-    <Algorithm::KEY_BYTES as Deref>::Target: Default,
-    Algorithm::NONCE_BYTES: DerefMut,
-    <Algorithm::NONCE_BYTES as Deref>::Target: Default,
     AadLength: ArrayLength<u8>, {
-  opening_key: ClearOnDrop<Algorithm::KEY_BYTES>,
-  nonce: ClearOnDrop<Algorithm::NONCE_BYTES>,
-  aad: ClearOnDrop<GenericArray<u8, AadLength>>,
+  opening_key: Algorithm::KEY_BYTES,
+  nonce: Algorithm::NONCE_BYTES,
+  aad: GenericArray<u8, AadLength>,
 }
 
 impl<A, L,> PartialEq for OpenData<A, L,>
-  where A: super::aead::Algorithm,
-    A::KEY_BYTES: DerefMut,
-    <A::KEY_BYTES as Deref>::Target: PartialEq + Default,
-    A::NONCE_BYTES: DerefMut,
-    <A::NONCE_BYTES as Deref>::Target: PartialEq + Default,
-    L: ArrayLength<u8>, {
+  where A: Algorithm, L: ArrayLength<u8>, {
   fn eq(&self, rhs: &Self,) -> bool {
-    *self.opening_key == *rhs.opening_key
-    && *self.nonce == *rhs.nonce
-    && *self.aad == *rhs.aad
+    self.opening_key.as_ref() == rhs.opening_key.as_ref()
+    && self.nonce.as_ref() == rhs.nonce.as_ref()
+    && self.aad.as_ref() == rhs.aad.as_ref()
   }
 }
 
 impl<A, L,> Eq for OpenData<A, L,>
-  where A: super::aead::Algorithm,
-    A::KEY_BYTES: DerefMut,
-    <A::KEY_BYTES as Deref>::Target: Eq + Default,
-    A::NONCE_BYTES: DerefMut,
-    <A::NONCE_BYTES as Deref>::Target: Eq + Default,
-    L: ArrayLength<u8>, {}
+  where A: Algorithm, L: ArrayLength<u8>, {}
+
+impl<A, L,> Drop for OpenData<A, L,>
+  where A: Algorithm, L: ArrayLength<u8>, {
+  fn drop(&mut self,) {
+    ClearOnDrop::new(self.opening_key.as_mut(),);
+    ClearOnDrop::new(self.nonce.as_mut(),);
+    ClearOnDrop::new(self.aad.as_mut(),);
+  }
+}
 
 pub(crate) fn cmp<A, D, R, L,>(lhs: &ReceiveClient<A, D, R, L,>, rhs: &ReceiveClient<A, D, R, L,>,) -> bool
-  where A: super::aead::Algorithm,
-    A::KEY_BYTES: DerefMut,
-    <A::KEY_BYTES as Deref>::Target: PartialEq + Default,
-    A::NONCE_BYTES: DerefMut,
-    <A::NONCE_BYTES as Deref>::Target: PartialEq + Default,
+  where A: Algorithm,
+    A::KEY_BYTES: PartialEq,
+    A::NONCE_BYTES: PartialEq,
     L: ArrayLength<u8>, {
   use crate::ratchet;
   use std::hash::Hash;

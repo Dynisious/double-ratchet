@@ -12,7 +12,7 @@ use generic_array::{ArrayLength, typenum::{consts, Unsigned,},};
 use clear_on_drop::ClearOnDrop;
 use std::marker::PhantomData;
 
-// mod serde;
+mod serde;
 
 /// The sending half of a Client.
 pub(crate) struct SendClient<Algorithm, Digest, Rounds = consts::U1, AadLength = consts::U0,> {
@@ -165,7 +165,7 @@ pub(crate) fn cmp<A, D, R, L,>(lhs: &SendClient<A, D, R, L,>, rhs: &SendClient<A
 
 #[cfg(test,)]
 mod tests {
-  use super::*;
+  
 
   #[test]
   fn test_send_client() {

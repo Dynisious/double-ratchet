@@ -9,7 +9,7 @@ use generic_array::typenum::{consts, Unsigned,};
 use clear_on_drop::ClearOnDrop;
 use std::{iter, marker::PhantomData,};
 
-// mod serde;
+mod serde;
 
 /// A HKDF Ratchet which can be used to produce cyptographically secure sudo random bytes.
 pub struct Ratchet<Digest, Rounds = consts::U1,> {

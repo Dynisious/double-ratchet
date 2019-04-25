@@ -5,7 +5,7 @@
 
 use x25519_dalek::PublicKey;
 
-// mod serde;
+mod serde;
 
 /// The headers tagged with a message.
 #[derive(Clone, Copy, Debug,)]
