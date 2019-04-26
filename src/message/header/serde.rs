@@ -1,4 +1,4 @@
-//! Defines serde for the [Message] type.
+//! Defines serde for the Header type.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-04-25

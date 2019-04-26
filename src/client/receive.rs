@@ -9,7 +9,7 @@ use generic_array::{GenericArray, ArrayLength, typenum::consts,};
 use x25519_dalek::PublicKey;
 
 use clear_on_drop::ClearOnDrop;
-use std::{collections::HashMap, ops::{Deref, DerefMut},};
+use std::{collections::HashMap,};
 
 mod serde;
 
@@ -56,6 +56,7 @@ impl<A, L,> Drop for OpenData<A, L,>
   }
 }
 
+#[cfg(test,)]
 pub(crate) fn cmp<A, D, R, L,>(lhs: &ReceiveClient<A, D, R, L,>, rhs: &ReceiveClient<A, D, R, L,>,) -> bool
   where A: Algorithm,
     A::KEY_BYTES: PartialEq,
@@ -84,7 +85,7 @@ pub(crate) fn cmp<A, D, R, L,>(lhs: &ReceiveClient<A, D, R, L,>, rhs: &ReceiveCl
 
 #[cfg(test,)]
 mod tests {
-  use super::*;
+  
 
   #[test]
   fn test_receive_client() {

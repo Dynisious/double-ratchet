@@ -1,4 +1,4 @@
-//! Defines the double ratchet [Client].
+//! Defines serde for Client.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-04-25
@@ -84,6 +84,7 @@ impl<'de, D, R, A,> Deserialize<'de> for Client<D, R, A,>
   }
 }
 
+#[cfg(test,)]
 fn cmp<D, R, A,>(lhs: &Client<D, R, A,>, rhs: &Client<D, R, A,>,) -> bool
   where A: ArrayLength<u8>, {
   use crate::client::{send, receive,};

@@ -1,4 +1,4 @@
-//! Defines the receiving half of a [Client].
+//! Defines serde for ReceiveClient.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-04-25

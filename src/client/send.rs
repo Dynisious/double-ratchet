@@ -156,6 +156,7 @@ impl<A, D, R, L,> Drop for SendClient<A, D, R, L,> {
   }
 }
 
+#[cfg(test,)]
 pub(crate) fn cmp<A, D, R, L,>(lhs: &SendClient<A, D, R, L,>, rhs: &SendClient<A, D, R, L,>,) -> bool {
   use crate::ratchet;
 

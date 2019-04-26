@@ -89,7 +89,7 @@ impl<D, R,> Ratchet<D, R,>
     //---Perform rounds of hashing---
     //Initialise the input fields. 
     let (ikm, salt,) = self.state.split_at_mut(<D::BlockSize as Unsigned>::USIZE,);
-    let mut msalt = if salt.is_empty() { return Err(()) }
+    let mut msalt = if salt.is_empty() { None }
       else { Some(&*salt) };
 
     //Perform hashing rounds.
@@ -102,7 +102,7 @@ impl<D, R,> Ratchet<D, R,>
       //Update the inputs.
       ikm.copy_from_slice(&data[..ikm.len()],);
       salt.copy_from_slice(&data[ikm.len()..],);
-      msalt = if salt.is_empty() { return Err(()) }
+      msalt = if salt.is_empty() { None }
         else { Some(salt) };
     }
 
@@ -123,6 +123,7 @@ impl<D, R,> Ratchet<D, R,>
   }
 }
 
+#[cfg(test,)]
 #[inline]
 pub(crate) fn cmp<D, R,>(lhs: &Ratchet<D, R,>, rhs: &Ratchet<D, R,>,) -> bool {
   lhs.state == rhs.state

@@ -1,4 +1,4 @@
-//! Defines serde for [Client].
+//! Defines serde for SendClient.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-04-25
@@ -43,7 +43,7 @@ impl<'de, A, D, R, L,> Deserialize<'de> for SendClient<A, D, R, L,> {
       }
       fn visit_seq<Acc,>(self, mut seq: Acc,) -> Result<Self::Value, Acc::Error>
         where Acc: SeqAccess<'de>, {
-        use ::serde::de::Unexpected;
+        
         let ratchet = seq.next_element()?
           .ok_or(Acc::Error::missing_field(FIELDS[0],),)?;
         let next_header = seq.next_element()?
@@ -72,7 +72,7 @@ mod tests {
   fn test_send_client_serde() {
     let ratchet = Ratchet::<Sha1,>::from_bytes(&mut [1; 100],);
     let public_key = [1; 32].into();
-    let algorithm = &aead::AES_256_GCM;
+    let _algorithm = &aead::AES_256_GCM;
     let client = SendClient::<Aes256Gcm, Sha1,>::new(ratchet, public_key,);
     let mut serialised = [0u8; 1024];
     let serialised = {
