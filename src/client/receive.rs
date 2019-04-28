@@ -1,7 +1,7 @@
 //! Defines the receiving half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-25
+//! Last Moddified --- 2019-04-28
 
 use super::aead::Algorithm;
 use crate::Ratchet;
@@ -27,11 +27,25 @@ pub(crate) struct ReceiveClient<Algorithm, Digest, Rounds = consts::U1, AadLengt
   previous_keys: HashMap<KeyArray, HashMap<usize, OpenData<Algorithm, AadLength,>>>,
 }
 
+impl<A, D, R, L,> ReceiveClient<A, D, R, L,>
+  where A: super::aead::Algorithm,
+    L: ArrayLength<u8>, {
+  /// Returns a new ReceiveClient using the passed ratchet and public key.
+  /// 
+  /// # Params
+  /// 
+  /// ratchet --- The Ratchet to produce opening data.  
+  /// public_key --- The PublicKey of the partner Client.  
+  pub fn new(ratchet: Ratchet<D, R,>, public_key: PublicKey,) -> Self {
+    unimplemented!()
+  }
+}
+
 struct OpenData<Algorithm, AadLength = consts::U0,>
   where Algorithm: super::aead::Algorithm,
     AadLength: ArrayLength<u8>, {
-  opening_key: Algorithm::KEY_BYTES,
-  nonce: Algorithm::NONCE_BYTES,
+  opening_key: GenericArray<u8, Algorithm::KeyLength>,
+  nonce: GenericArray<u8, Algorithm::NonceLength>,
   aad: GenericArray<u8, AadLength>,
 }
 
@@ -59,8 +73,8 @@ impl<A, L,> Drop for OpenData<A, L,>
 #[cfg(test,)]
 pub(crate) fn cmp<A, D, R, L,>(lhs: &ReceiveClient<A, D, R, L,>, rhs: &ReceiveClient<A, D, R, L,>,) -> bool
   where A: Algorithm,
-    A::KEY_BYTES: PartialEq,
-    A::NONCE_BYTES: PartialEq,
+    A::KeyLength: PartialEq,
+    A::NonceLength: PartialEq,
     L: ArrayLength<u8>, {
   use crate::ratchet;
   use std::hash::Hash;

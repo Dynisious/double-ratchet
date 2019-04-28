@@ -8,6 +8,7 @@ use ::serde::{
   ser::{Serialize, Serializer, SerializeTupleStruct,},
   de::{Deserialize, Deserializer, SeqAccess, Visitor, Unexpected,},
 };
+use generic_array::typenum::Unsigned;
 use std::marker::PhantomData;
 
 static CLIENT_FIELDS: &[&str] = &[
@@ -25,8 +26,6 @@ static OPENDATA_FIELDS: &[&str] = &[
 
 impl<A, D, R, L,> Serialize for ReceiveClient<A, D, R, L,>
   where A: Algorithm,
-    A::KEY_BYTES: Serialize,
-    A::NONCE_BYTES: Serialize,
     L: ArrayLength<u8>, {
   fn serialize<S,>(&self, serializer: S,) -> Result<S::Ok, S::Error>
     where S: Serializer, {
@@ -43,8 +42,8 @@ impl<A, D, R, L,> Serialize for ReceiveClient<A, D, R, L,>
 
 impl<'de, A, D, R, L,> Deserialize<'de> for ReceiveClient<A, D, R, L,>
   where A: Algorithm,
-    A::KEY_BYTES: Deserialize<'de>,
-    A::NONCE_BYTES: Deserialize<'de>,
+    <A::KeyLength as ArrayLength<u8>>::ArrayType: Copy,
+    <A::NonceLength as ArrayLength<u8>>::ArrayType: Copy,
     L: ArrayLength<u8>, L::ArrayType: Copy, {
   fn deserialize<Des,>(deserializer: Des,) -> Result<Self, Des::Error>
     where Des: Deserializer<'de>, {
@@ -57,8 +56,8 @@ impl<'de, A, D, R, L,> Deserialize<'de> for ReceiveClient<A, D, R, L,>
 
     impl<'de, A, D, R, L,> Visitor<'de> for ClientVisitor<A, D, R, L,>
       where A: Algorithm,
-        A::KEY_BYTES: Deserialize<'de>,
-        A::NONCE_BYTES: Deserialize<'de>,
+        <A::KeyLength as ArrayLength<u8>>::ArrayType: Copy,
+        <A::NonceLength as ArrayLength<u8>>::ArrayType: Copy,
         L: ArrayLength<u8>, L::ArrayType: Copy, {
       type Value = ReceiveClient<A, D, R, L,>;
 
@@ -102,8 +101,6 @@ impl<'de, A, D, R, L,> Deserialize<'de> for ReceiveClient<A, D, R, L,>
 
 impl<A, L,> Serialize for OpenData<A, L,>
   where A: Algorithm,
-    A::KEY_BYTES: Serialize,
-    A::NONCE_BYTES: Serialize,
     L: ArrayLength<u8>, {
   fn serialize<S,>(&self, serializer: S,) -> Result<S::Ok, S::Error>
     where S: Serializer, {
@@ -118,8 +115,8 @@ impl<A, L,> Serialize for OpenData<A, L,>
 
 impl<'de, A, L,> Deserialize<'de> for OpenData<A, L,>
   where A: Algorithm,
-    A::KEY_BYTES: Deserialize<'de>,
-    A::NONCE_BYTES: Deserialize<'de>,
+    <A::KeyLength as ArrayLength<u8>>::ArrayType: Copy,
+    <A::NonceLength as ArrayLength<u8>>::ArrayType: Copy,
     L: ArrayLength<u8>, L::ArrayType: Copy, {
   fn deserialize<D,>(deserializer: D,) -> Result<Self, D::Error>
     where D: Deserializer<'de>, {
@@ -132,8 +129,8 @@ impl<'de, A, L,> Deserialize<'de> for OpenData<A, L,>
 
     impl<'de, A, L,> Visitor<'de> for OpenDataVisitor<A, L,>
       where A: Algorithm,
-        A::KEY_BYTES: Deserialize<'de>,
-        A::NONCE_BYTES: Deserialize<'de>,
+        <A::KeyLength as ArrayLength<u8>>::ArrayType: Copy,
+        <A::NonceLength as ArrayLength<u8>>::ArrayType: Copy,
         L: ArrayLength<u8>, L::ArrayType: Copy, {
       type Value = OpenData<A, L,>;
 
@@ -142,10 +139,26 @@ impl<'de, A, L,> Deserialize<'de> for OpenData<A, L,>
       }
       fn visit_seq<Acc,>(self, mut seq: Acc,) -> Result<Self::Value, Acc::Error>
         where Acc: SeqAccess<'de>, {
-        let opening_key = seq.next_element()?
-          .ok_or(Acc::Error::missing_field(OPENDATA_FIELDS[0],),)?;
-        let nonce = seq.next_element()?
-          .ok_or(Acc::Error::missing_field(OPENDATA_FIELDS[1],),)?;
+        let opening_key = {
+          let opening_key = seq.next_element::<&[u8]>()?
+            .ok_or(Acc::Error::missing_field(OPENDATA_FIELDS[0],),)?;
+
+          if opening_key.len() != A::KeyLength::USIZE { return Err(Acc::Error::invalid_value(
+            Unexpected::Seq, &format!("an array of {} bytes", A::KeyLength::USIZE,).as_ref(),
+          )) }
+
+          *<&GenericArray<u8, _>>::from(opening_key,)
+        };
+        let nonce = {
+          let nonce = seq.next_element::<&[u8]>()?
+            .ok_or(Acc::Error::missing_field(OPENDATA_FIELDS[0],),)?;
+
+          if nonce.len() != A::NonceLength::USIZE { return Err(Acc::Error::invalid_value(
+            Unexpected::Seq, &format!("an array of {} bytes", A::NonceLength::USIZE,).as_ref(),
+          )) }
+
+          *<&GenericArray<u8, _>>::from(nonce,)
+        };
         let aad = {
           let aad = seq.next_element::<&[u8]>()?
             .ok_or(Acc::Error::missing_field(OPENDATA_FIELDS[2],),)?;

@@ -9,14 +9,14 @@ edition = "2018"
 test-large-data = []
 
 [dependencies]
-x25519-dalek = "0.5.2"
-hkdf = "0.7.0"
-ring = "0.14.6"
-digest = "0.8.0"
-generic-array = "0.12.0"
-serde_cbor = "0.9.0"
-serde = "1.0.90"
-clear_on_drop = "0.2.3"
+x25519-dalek = "0.5"
+hkdf = "0.7"
+ring = "0.14"
+digest = "0.8"
+generic-array = "0.12"
+serde_cbor = "0.9"
+serde = "1.0"
+clear_on_drop = "0.2"
 
 [dev-dependencies]
-sha-1 = "0.8.1"
+sha-1 = "0.8"

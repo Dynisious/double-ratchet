@@ -1,7 +1,7 @@
 //! Defines the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-20
+//! Last Moddified --- 2019-04-28
 
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
@@ -12,6 +12,7 @@ use std::{iter, marker::PhantomData,};
 mod serde;
 
 /// A HKDF Ratchet which can be used to produce cyptographically secure sudo random bytes.
+#[derive(Clone,)]
 pub struct Ratchet<Digest, Rounds = consts::U1,> {
   /// The internal state used to produce the next sudo random bytes.
   state: ClearOnDrop<Box<[u8]>>,
@@ -70,14 +71,13 @@ impl<D, R,> Ratchet<D, R,>
   /// # Prams
   /// 
   /// out_len --- The length of the byte sequence output.  
-  pub fn advance(&mut self, out_len: usize,) -> Result<Vec<u8>, ()> {
+  pub fn advance(&mut self, out_len: usize,) -> Option<Vec<u8>> {
     use std::io::Write;
 
     //Allocate memory for the output.
     let mut data = {
       //Check that the length of the output wont overflow a usize.
-      let len = self.state.len().checked_add(out_len,)
-        .ok_or(())?;
+      let len = self.state.len().checked_add(out_len,)?;
       //Allocate enough capacity.
       let mut data = Vec::with_capacity(len,);
 
@@ -96,8 +96,7 @@ impl<D, R,> Ratchet<D, R,>
     for _ in 0..R::USIZE {
       //Perform the HKDF round.
       Hkdf::<D>::extract(msalt.take().map(move |v,| &*v,), ikm,)
-        .expand(salt, &mut data,)
-        .or(Err(()),)?;
+        .expand(salt, &mut data,).ok()?;
       
       //Update the inputs.
       ikm.copy_from_slice(&data[..ikm.len()],);
@@ -110,16 +109,14 @@ impl<D, R,> Ratchet<D, R,>
     data.extend(iter::repeat(0,).take(out_len,),);
     //Perform the final extract and expand round.
     Hkdf::<D>::extract(msalt.take().map(move |v,| &*v,), ikm,)
-      .expand(&salt, &mut data,)
-      .or(Err(()),)?;
+      .expand(&salt, &mut data,).ok()?;
     
     //Move the data needed for the internal state and clear the original data.
-    (&mut *self.state).write_all(&ClearOnDrop::new(data.split_at_mut(out_len,).1,),)
-      .or(Err(()),)?;
+    (&mut *self.state).write_all(&ClearOnDrop::new(data.split_at_mut(out_len,).1,),).ok()?;
     
     //Truncate the zeroed state data off of the end of `data`.
     data.truncate(out_len,);
-    Ok(data)
+    Some(data)
   }
 }
 
