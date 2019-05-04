@@ -6,8 +6,7 @@
 use crate::{message::Message, ratchet::Ratchet, typenum::{Unsigned, consts,},};
 use digest::{BlockInput, generic_array::{ArrayLength, GenericArray,},};
 use x25519_dalek::{PublicKey, StaticSecret,};
-use rand_core::{RngCore, CryptoRng,};
-use std::{ops, iter::{Iterator, FromIterator,},};
+use std::{ops, iter::{TrustedLen, FromIterator,}, collections::HashMap,};
 
 pub mod aead;
 mod open_data;
@@ -29,6 +28,8 @@ pub struct Client<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, Aad
   lock: LockClient<Digest, State, Algorithm, Rounds, AadLength,>,
   /// The opening half of the `Client`.
   open: OpenClient<Digest, State, Algorithm, Rounds, AadLength,>,
+  /// The private key needed to decrypt messages received from the remote Client in the next ratchet step.
+  private_key: StaticSecret,
   /// Whether this initiator of the communication.
   local: bool,
 }
@@ -38,7 +39,7 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
     S: ArrayLength<u8> + ops::Sub<D::BlockSize>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: Iterator<Item = u8>,
+    Ratchet<D, S, R,>: TrustedLen<Item = u8>,
     GenericArray<u8, S>: FromIterator<u8>,
     <S as ops::Sub<D::BlockSize>>::Output: Unsigned, {
   /// Generates a pair of Ratchet chains.
@@ -76,13 +77,13 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// # Params
   /// 
   /// remote --- The public key of the remote Client.  
-  /// key --- The private key to connect with.  
-  pub fn connect(remote: PublicKey, key: StaticSecret,) -> Self {
-    let (lock, open,) = Self::generate_chains(&remote, &key,);
-    let lock = LockClient::new(lock, (&key).into(),);
+  /// private_key --- The private key to connect using.  
+  pub fn connect(remote: PublicKey, private_key: StaticSecret,) -> Self {
+    let (lock, open,) = Self::generate_chains(&remote, &private_key,);
+    let lock = LockClient::new(lock, (&private_key).into(),);
     let open = OpenClient::new(open, remote,);
 
-    Client { lock, open, local: true, }
+    Client { lock, open, private_key, local: true, }
   }
   /// Accepts a connection from a remote Client.
   /// 
@@ -91,13 +92,13 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// # Params
   /// 
   /// remote --- The public key of the remote Client.  
-  /// key --- The private key to connect with.  
-  pub fn accept(remote: PublicKey, key: StaticSecret,) -> Self {
-    let (open, lock,) = Self::generate_chains(&remote, &key,);
-    let lock = LockClient::new(lock, (&key).into(),);
+  /// private_key --- The private key to connect using.  
+  pub fn accept(remote: PublicKey, private_key: StaticSecret,) -> Self {
+    let (open, lock,) = Self::generate_chains(&remote, &private_key,);
+    let lock = LockClient::new(lock, (&private_key).into(),);
     let open = OpenClient::new(open, remote,);
 
-    Client { lock, open, local: false, }
+    Client { lock, open, private_key, local: false, }
   }
 }
 
@@ -105,10 +106,7 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: Iterator<Item = u8>,
-    A::KeyLength: ops::Add<A::NonceLength>,
-    <A::KeyLength as ops::Add<A::NonceLength>>::Output: ops::Add<L>,
-    <<A::KeyLength as ops::Add<A::NonceLength>>::Output as ops::Add<L>>::Output: ArrayLength<u8>, {
+    Ratchet<D, S, R,>: TrustedLen<Item = u8>, {
   /// Encrypts the passed message.
   /// 
   /// The buffer will be cleared if the message is encrypted successfully.
@@ -122,25 +120,13 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
 }
 
 impl<D, S, A, R, L,> Client<D, S, A, R, L,>
-  where S: ArrayLength<u8>,
+  where D: BlockInput,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: Iterator<Item = u8>,
-    A::KeyLength: ops::Add<A::NonceLength>,
-    <A::KeyLength as ops::Add<A::NonceLength>>::Output: ops::Add<L>,
-    <<A::KeyLength as ops::Add<A::NonceLength>>::Output as ops::Add<L>>::Output: ArrayLength<u8>, {
-  /// Performs a ratchet step.
-  /// 
-  /// # Params
-  /// 
-  /// public_key --- The PublicKey of the remote Client.  
-  /// rand --- The source of randomness to generate a Diffie-Hellman keypair.  
-  fn ratchet_step<Rand,>(&self, public_key: PublicKey, rand: &mut Rand,) -> Self
-    where Rand: RngCore + CryptoRng, {
-    let private_key = StaticSecret::new(rand,);
-
-    unimplemented!()
-  }
+    Ratchet<D, S, R,>: TrustedLen<Item = u8>,
+    GenericArray<u8, S>: FromIterator<u8>,
+    <S as ops::Sub<D::BlockSize>>::Output: Unsigned, {
   /// Receives a message from the connected Client.
   /// 
   /// If successful the decrypted message is returned else the Message is returned with
@@ -149,10 +135,47 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// # Params
   /// 
   /// message --- The Message to decrypt.  
+  /// 
+  /// # Warning
+  /// 
+  /// * If `message` is not from the Client paired with this one it will corrupt the state of this Client.
+  /// 
+  /// # Panics
+  /// 
+  /// * If previous corruption of state is detected.
   pub fn open(&mut self, message: Message,) -> Result<Box<[u8]>, Message> {
+    use std::mem;
+
     //Check for Ratchet step.
-    if message.header.public_key.as_bytes() != self.open.current_public_key.as_bytes() {
-      unimplemented!()
+    if message.header.public_key.as_bytes() != self.open.current_public_key.as_bytes()
+      && !self.open.previous_keys.contains_key(message.header.public_key.as_bytes(),) {
+      //Generate a new private key.
+      let private_key = mem::replace(&mut self.private_key, StaticSecret::new(&mut rand::thread_rng(),),);
+      //Generate the new ratchets.
+      let (lock, open,) = {
+        let (local, remote,) = Self::generate_chains(&message.header.public_key, &private_key,);
+
+        if self.local { (local, remote,) }
+        else { (remote, local,) }
+      };
+
+      self.lock = LockClient::new(lock, (&private_key).into(),);
+
+      //Generate skipped keys.
+      for index in self.open.sent_count..message.header.message_index {
+        self.open.current_keys.insert(index, OpenData::from_iter(&mut self.open.ratchet,),);
+      }
+      //Store the skipped keys.
+      self.open.previous_keys.insert(
+        *self.open.current_public_key.as_bytes(),
+        mem::replace(&mut self.open.current_keys, HashMap::new(),),
+      );
+      //Reset the sent count.
+      self.open.sent_count = 0;
+      //Update the Ratchet.
+      self.open.ratchet = open;
+      //Update the public key.
+      self.open.current_public_key = message.header.public_key;
     }
 
     //Open the message.
@@ -169,6 +192,7 @@ impl<D, S, A, R, L,> PartialEq for Client<D, S, A, R, L,>
   fn eq(&self, rhs: &Self,) -> bool {
     self.local == rhs.local
     && self.open == rhs.open
+    && self.private_key.to_bytes() == rhs.private_key.to_bytes()
     && self.local == rhs.local
   }
 }
@@ -195,17 +219,20 @@ mod tests {
       .take(100,)
       .collect::<Box<[u8]>>();
     
+    //Test sending.
     let mut buffer = msg.clone();
     let message = lock.lock(&mut buffer,)
       .expect("Error locking message");
     
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
+    //Test receiving.
     let buffer = open.open(message,)
       .expect("Error opening message");
     
     assert_eq!(buffer, msg, "Received message corrupted",);
     
+    //Test sending other way.
     open.lock(&mut [0; 1024],).expect("Error encrypting throwaway message",);
     let mut buffer = msg.clone();
     let message = open.lock(&mut buffer,)
@@ -213,6 +240,10 @@ mod tests {
     
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
+    //Test corrupted message.
+    lock.open(Message { data: Box::new([1; 100]), ..message },)
+      .expect_err("Opened corrupted message");
+    //Test corrupted recovery.
     let buffer = lock.open(message,)
       .expect("Error opening message");
     

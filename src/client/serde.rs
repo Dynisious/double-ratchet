@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 static FIELDS: &[&str] = &[
   "lock",
   "open",
+  "private_key",
   "local",
 ];
 
@@ -26,6 +27,7 @@ impl<D, S, A, R, L,> Serialize for Client<D, S, A, R, L,>
 
     serializer.serialize_field(&self.lock,)?;
     serializer.serialize_field(&self.open,)?;
+    serializer.serialize_field(&self.private_key.to_bytes(),)?;
     serializer.serialize_field(&self.local,)?;
     serializer.end()
   }
@@ -59,10 +61,12 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Client<D, S, A, R, L,>
           .ok_or(Acc::Error::missing_field(FIELDS[0],),)?;
         let open = seq.next_element()?
           .ok_or(Acc::Error::missing_field(FIELDS[1],),)?;
+        let private_key = seq.next_element::<[u8; 32]>()?
+          .ok_or(Acc::Error::missing_field(FIELDS[2],),)?.into();
         let local = seq.next_element()?
-          .ok_or(Acc::Error::missing_field(FIELDS[2],),)?;
+          .ok_or(Acc::Error::missing_field(FIELDS[3],),)?;
 
-        Ok(Client { lock, open, local, })
+        Ok(Client { lock, open, private_key, local, })
       }
     }
 
@@ -106,7 +110,8 @@ mod tests {
         previous_keys,
       }
     };
-    let client = Client::<Sha1, consts::U500, Aes256Gcm, consts::U1,> { lock, open, local: true, };
+    let private_key = [1; 32].into();
+    let client = Client::<Sha1, consts::U500, Aes256Gcm, consts::U1,> { lock, open, private_key, local: true, };
     let mut serialised = [0u8; 2048];
     let serialised = {
       let writer = &mut serialised.as_mut();

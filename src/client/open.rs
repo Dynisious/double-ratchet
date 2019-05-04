@@ -4,10 +4,13 @@
 //! Last Moddified --- 2019-05-04
 
 use super::{aead::{Algorithm, Aes256Gcm,}, OpenData,};
-use crate::{Ratchet, message::Message, typenum::consts,};
-use digest::generic_array::ArrayLength;
+use crate::{Ratchet, message::Message,
+  generic_array::ArrayLength,
+  typenum::consts,
+};
+use clear_on_drop::ClearOnDrop;
 use x25519_dalek::PublicKey;
-use std::{iter::{Iterator, FromIterator,}, collections::HashMap,};
+use std::{iter::TrustedLen, collections::HashMap,};
 
 mod serde;
 
@@ -53,8 +56,7 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: Iterator<Item = u8>,
-    Box<OpenData<A, L,>>: FromIterator<u8>, {
+    Ratchet<D, S, R,>: TrustedLen<Item = u8>, {
   /// Opens the passed message returning the message data.
   /// 
   /// If the message cannot be opened it is returned.
@@ -64,6 +66,9 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
   /// message --- The message to open.
   pub fn open(&mut self, message: Message,) -> Result<Box<[u8]>, Message> {
     use ring::aead::{self, OpeningKey, Nonce, Aad,};
+    
+    //The index of this message in the current ratchet step.
+    let message_index = message.header.message_index;
     //The data to open this message.
     let open_data = if message.header.public_key.as_bytes() != self.current_public_key.as_bytes() {
       let key_group = match self.previous_keys.get_mut(message.header.public_key.as_bytes(),) {
@@ -75,24 +80,23 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
         Some(data) => data,
         None => return Err(message),
       }
-    } else if message.header.message_index >= self.sent_count {
+    } else if message_index >= self.sent_count {
       //Generate skipped keys.
       for index in self.sent_count..message.header.message_index {
-        self.current_keys.insert(index, Box::from_iter(&mut self.ratchet,),);
+        self.current_keys.insert(index, OpenData::from_iter(&mut self.ratchet,),);
       }
 
       //Update the count of sent messages.
       self.sent_count = message.header.message_index + 1;
       //Generate the opening key data.
-      Box::from_iter(&mut self.ratchet,)
+      OpenData::from_iter(&mut self.ratchet,)
     } else {
       //Remove the skipped key
-      match self.current_keys.remove(&message.header.message_index,) {
+      match self.current_keys.remove(&message_index,) {
         Some(data) => data,
         None => return Err(message),
       }
     };
-
     let key = match OpeningKey::new(A::algorithm(), &open_data.key,) {
       Ok(key) => key,
       Err(_) => return Err(message),
@@ -102,10 +106,14 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
       Err(_) => return Err(message),
     };
     let aad = Aad::from(open_data.aad.as_slice(),);
-
-    aead::open_in_place(&key, nonce, aad, 0, &mut message.data.clone(),)
+    let res = aead::open_in_place(&key, nonce, aad, 0, ClearOnDrop::new(message.data.clone(),).as_mut(),)
       .map(|data,| (&*data).into(),)
-      .or(Err(message),)
+      .or(Err(message),);
+    
+    //If there was an error store the opening data.
+    if res.is_err() { self.current_keys.insert(message_index, open_data,); }
+
+    res
   }
 }
 
@@ -156,7 +164,7 @@ mod tests {
     let public_key = [1; 32].into();
     let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet.clone(), public_key,);
     let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet, public_key,);
-    let msg = [1; 100];
+    let msg = [1; 20];
     let other = lock.lock(&mut msg.clone(),)
       .expect("Error locking message");
     let other = open.open(other,)

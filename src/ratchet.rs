@@ -3,10 +3,12 @@
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-05-04
 
-use crate::typenum::{Unsigned, Add1, Diff, bit::B1, consts,};
+use crate::{
+  typenum::{Unsigned, Add1, Diff, bit::B1, consts,},
+  generic_array::{GenericArray, ArrayLength,},
+};
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
-use digest::generic_array::{GenericArray, ArrayLength,};
 use clear_on_drop::ClearOnDrop;
 use std::{ops, iter::TrustedLen, marker::PhantomData,};
 
@@ -171,7 +173,7 @@ mod tests {
       .take(rounds,);
 
     for (round, check,) in iter {
-      assert!(check, "Ratchets diverged on round {}", round,);
+      assert!(check, "Ratchets diverged on round, {}", round,);
     }
 
     assert_ne!(ratchet1.next(), None, "Iterator finished",);
@@ -183,7 +185,7 @@ mod tests {
       .take(rounds,);
 
     for (round, check,) in iter {
-      assert!(check, "Ratchets converged on round {}", round,);
+      assert!(check, "Ratchets converged on round, {}", round,);
     }
 
     assert_ne!(ratchet1.next(), None, "Iterator finished",);

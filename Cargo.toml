@@ -16,7 +16,7 @@ digest = "0.8"
 serde_cbor = "0.9"
 serde = "1.0"
 clear_on_drop = "0.2"
-rand_core = "0.4"
+rand = "0.6"
 
 [dev-dependencies]
 sha-1 = "0.8"
