@@ -1,7 +1,7 @@
 //! Defines serde for the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-25
+//! Last Moddified --- 2019-05-04
 
 use super::*;
 use ::serde::{
@@ -13,63 +13,64 @@ static FIELDS: &[&str] = &[
   "state",
 ];
 
-impl<D, R,> Serialize for Ratchet<D, R,> {
-  fn serialize<S,>(&self, serializer: S,) -> Result<S::Ok, S::Error>
-    where S: Serializer, {
+impl<D, S, R,> Serialize for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {
+  fn serialize<Ser,>(&self, serializer: Ser,) -> Result<Ser::Ok, Ser::Error>
+    where Ser: Serializer, {
     let mut serializer = serializer.serialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(),)?;
 
-    serializer.serialize_field(&*self.state,)?;
+    serializer.serialize_field::<[u8]>(self.state.as_slice(),)?;
     serializer.end()
   }
 }
 
-impl<'de, D, R,> Deserialize<'de> for Ratchet<D, R,> {
+impl<'de, D, S: 'de, R,> Deserialize<'de> for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {
   fn deserialize<Des,>(deserializer: Des,) -> Result<Self, Des::Error>
     where Des: Deserializer<'de>, {
     use ::serde::de::Error;
     use std::fmt;
 
-    struct RatchetVisitor<D, R,> {
-      _phantom: PhantomData<(D, R,)>,
+    struct RatchetVisitor<D, S, R,> {
+      _data: PhantomData<(D, S, R,)>,
     };
 
-    impl<'de, D, R,> Visitor<'de> for RatchetVisitor<D, R,> {
-      type Value = Ratchet<D, R,>;
+    impl<'de, D, S: 'de, R,> Visitor<'de> for RatchetVisitor<D, S, R,>
+      where S: ArrayLength<u8>, {
+      type Value = Ratchet<D, S, R,>;
 
       fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
-        write!(fmt, "Expecting a `Ratchet` instance",)
+        write!(fmt, "Expecting a tuple of length {}", FIELDS.len(),)
       }
       fn visit_seq<A,>(self, mut seq: A,) -> Result<Self::Value, A::Error>
         where A: SeqAccess<'de>, {
-        let state = {
-          let state = seq.next_element()?
-            .ok_or(A::Error::missing_field(FIELDS[0],),)?;
-          
-          ClearOnDrop::new(state,)
-        };
-        let _phantom = PhantomData;
+        let state = seq.next_element::<Box<[u8],>>()?
+          .ok_or(A::Error::missing_field(FIELDS[0],),)?;
+        
+        let mut res = Self::Value::default();
 
-        Ok(Ratchet { state, _phantom, })
+        res.state.copy_from_slice(state.as_ref(),);
+        Ok(res)
       }
     }
 
-    let visitor = RatchetVisitor { _phantom: PhantomData, };
+    let visitor = RatchetVisitor { _data: PhantomData, };
 
     deserializer.deserialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(), visitor,)
   }
 }
 
 #[cfg(test,)]
-pub(crate) mod tests {
+pub mod tests {
   use super::*;
   use sha1::Sha1;
 
   #[test]
   fn test_ratchet_serde() {
-    let ratchet = Ratchet::<Sha1,>::from_bytes(&mut [1; 100],);
+    let ratchet = Ratchet::<Sha1, consts::U500,>::new(&mut [1; 100],);
     let mut serialised = [0u8; 1024];
     let serialised = {
-      let writer = &mut serialised.as_mut();
+      let writer = &mut &mut serialised.as_mut();
 
       serde_cbor::to_writer(writer, &ratchet,)
         .expect("Error serialising the Client");
@@ -80,8 +81,8 @@ pub(crate) mod tests {
       &serialised[..len]
     };
     let other = serde_cbor::from_reader(serialised,)
-      .expect("Error deserialising the Client");
+      .expect("Error deserialising the Ratchet");
 
-    assert!(cmp(&ratchet, &other,), "Client deserialised incorrectly",);
+    assert!(ratchet == other, "Ratchet deserialised incorrectly",);
   }
 }

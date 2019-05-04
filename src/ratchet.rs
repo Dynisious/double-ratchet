@@ -1,130 +1,127 @@
 //! Defines the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-28
+//! Last Moddified --- 2019-05-04
 
+use crate::typenum::{Unsigned, Add1, Diff, bit::B1, consts,};
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
-use generic_array::typenum::{consts, Unsigned,};
+use digest::generic_array::{GenericArray, ArrayLength,};
 use clear_on_drop::ClearOnDrop;
-use std::{iter, marker::PhantomData,};
+use std::{ops, iter::TrustedLen, marker::PhantomData,};
 
 mod serde;
 
 /// A HKDF Ratchet which can be used to produce cyptographically secure sudo random bytes.
-#[derive(Clone,)]
-pub struct Ratchet<Digest, Rounds = consts::U1,> {
+pub struct Ratchet<Digest, State, Rounds = consts::U1,>
+  where State: ArrayLength<u8>, {
   /// The internal state used to produce the next sudo random bytes.
-  state: ClearOnDrop<Box<[u8]>>,
-  _phantom: PhantomData<(Digest, Rounds,)>,
+  state: Box<GenericArray<u8, State>>,
+  _data: PhantomData<(Digest, Rounds,)>,
 }
 
-impl<D, R,> Ratchet<D, R,>
-  where D: Input + BlockInput + FixedOutput + Reset + Clone + Default,
-    <D as BlockInput>::BlockSize: Clone,
-    R: Unsigned, {
-  /// Creates a new `Ratchet` from raw state bytes.
+impl<D, S, R,> Ratchet<D, S, R,>
+  where D: BlockInput,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize>,
+    <S as ops::Sub<D::BlockSize>>::Output: Unsigned, {
+  /// Creates a new `Ratchet` from state bytes.
   /// 
-  /// The `state` must be at least `D::BlockSize` bytes; any extra bytes are used as salt
-  /// in the `Hash Key Derivation` rounds.
+  /// If `state` is too short it will be padded.  
+  /// `state` will be cleared after creation.  
   /// 
   /// # Params
   /// 
   /// state --- The initial state data.  
-  /// 
-  /// # Panics
-  /// 
-  /// * If `state.len() < D::BlockSize` because there is not enough data to form a full hash input.
-  pub fn new(state: Box<[u8]>,) -> Self {
-    assert!(state.len() >= <D as BlockInput>::BlockSize::USIZE, "state.len() < D::BlockSize",);
-
+  pub fn new(state: &mut [u8],) -> Self {
+    //Iterate over the input bytes.
     let state = ClearOnDrop::new(state,);
+    //Allocate the state.
+    let mut res = Self::default();
 
-    Self { state, _phantom: PhantomData, }
+    //Initialise the state.
+    for (a, b,) in res.state.iter_mut().zip(state.iter().cloned(),) { *a = b }
+
+    res
   }
-  /// Creates a new `Ratchet` from bytes.
-  /// 
-  /// Applies padding if the input state is too small.
-  /// 
-  /// # Params
-  /// 
-  /// bytes --- The initial byte data.  
-  /// 
-  /// # Warning
-  /// 
-  /// `bytes` will be cleared when this function returns.
-  pub fn from_bytes(bytes: &mut [u8],) -> Self {
-    //Pad the input bytes, create the state, and clear the input.
-    let state = ClearOnDrop::new(
-      ClearOnDrop::new(bytes,).iter()
-      .cloned()
-      .chain(iter::repeat(0,)
-        .take(<D as BlockInput>::BlockSize::USIZE,),
-      )
-      .collect(),
-    );
+}
 
-    Self { state, _phantom: PhantomData, }
+impl<D, S, R,> Default for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {
+  #[inline]
+  fn default() -> Self {
+    let state = Box::new(GenericArray::default(),);
+
+    Self { state, _data: PhantomData, }
   }
-  /// Produces the next output from the `Ratchet`.
-  /// 
-  /// # Prams
-  /// 
-  /// out_len --- The length of the byte sequence output.  
-  pub fn advance(&mut self, out_len: usize,) -> Option<Vec<u8>> {
-    use std::io::Write;
+}
 
-    //Allocate memory for the output.
-    let mut data = {
-      //Check that the length of the output wont overflow a usize.
-      let len = self.state.len().checked_add(out_len,)?;
-      //Allocate enough capacity.
-      let mut data = Vec::with_capacity(len,);
+impl<D, S: ArrayLength<u8>, R,> Clone for Ratchet<D, S, R,> {
+  #[inline]
+  fn clone(&self,) -> Self {
+    let state = self.state.clone();
 
-      //Allocate the initial space.
-      data.extend(iter::repeat(0,).take(self.state.len(),),);
-      data
-    };
+    Self { state, _data: PhantomData, }
+  }
+}
 
-    //---Perform rounds of hashing---
-    //Initialise the input fields. 
-    let (ikm, salt,) = self.state.split_at_mut(<D::BlockSize as Unsigned>::USIZE,);
-    let mut msalt = if salt.is_empty() { None }
-      else { Some(&*salt) };
+impl<D, S, R,> Iterator for Ratchet<D, S, R,>
+  where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
+    R: Unsigned,
+    D::BlockSize: Clone,
+    <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
+    <S as ops::Add<B1>>::Output: ArrayLength<u8>,
+    <S as ops::Sub<B1>>::Output: Unsigned, {
+  type Item = u8;
+  
+  #[inline]
+  fn size_hint(&self,) -> (usize, Option<usize>,) { (std::usize::MAX, None,) }
+  fn next(&mut self,) -> Option<Self::Item> {
+    //The output from the hashing.
+    let mut okm = GenericArray::<u8, Add1<S>>::default();
+    let mut okm = ClearOnDrop::new(&mut okm,);
 
-    //Perform hashing rounds.
-    for _ in 0..R::USIZE {
-      //Perform the HKDF round.
-      Hkdf::<D>::extract(msalt.take().map(move |v,| &*v,), ikm,)
-        .expand(salt, &mut data,).ok()?;
-      
-      //Update the inputs.
-      ikm.copy_from_slice(&data[..ikm.len()],);
-      salt.copy_from_slice(&data[ikm.len()..],);
-      msalt = if salt.is_empty() { None }
-        else { Some(salt) };
+    for _ in  0..R::USIZE {
+      let (salt, ikm,) = self.state.split_at(Diff::<S, D::BlockSize>::USIZE,);
+
+      //Perform the hash.
+      Hkdf::<D>::extract(None, ikm,).expand(salt, &mut okm,)
+        .expect("Failed to expand data");
+      //Update the internal state.
+      self.state.copy_from_slice(&okm[..S::USIZE],);
     }
 
-    //Allocate extra data such that there will be `out_len` extra bytes.
-    data.extend(iter::repeat(0,).take(out_len,),);
-    //Perform the final extract and expand round.
-    Hkdf::<D>::extract(msalt.take().map(move |v,| &*v,), ikm,)
-      .expand(&salt, &mut data,).ok()?;
-    
-    //Move the data needed for the internal state and clear the original data.
-    (&mut *self.state).write_all(&ClearOnDrop::new(data.split_at_mut(out_len,).1,),).ok()?;
-    
-    //Truncate the zeroed state data off of the end of `data`.
-    data.truncate(out_len,);
-    Some(data)
+    //Return the output.
+    Some(okm[Diff::<S, B1>::USIZE])
+  }
+}
+
+unsafe impl<D, S, R,> TrustedLen for Ratchet<D, S, R,>
+  where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
+    R: Unsigned,
+    D::BlockSize: Clone,
+    <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
+    <S as ops::Add<B1>>::Output: ArrayLength<u8>,
+    <S as ops::Sub<B1>>::Output: Unsigned, {}
+
+impl<D, S: ArrayLength<u8>, R,> Drop for Ratchet<D, S, R,> {
+  #[inline]
+  fn drop(&mut self,) {
+    ClearOnDrop::new(self.state.as_mut_slice(),);
   }
 }
 
 #[cfg(test,)]
-#[inline]
-pub(crate) fn cmp<D, R,>(lhs: &Ratchet<D, R,>, rhs: &Ratchet<D, R,>,) -> bool {
-  lhs.state == rhs.state
+impl<D, S, R,> PartialEq for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {
+  #[inline]
+  fn eq(&self, rhs: &Self,) -> bool { self.state == rhs.state }
 }
+
+#[cfg(test,)]
+impl<D, S, R,> Eq for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {}
 
 #[cfg(test,)]
 mod tests {
@@ -136,45 +133,59 @@ mod tests {
     use std::{slice, mem,};
 
     let mut bytes = [1; 20];
-    let ratchet = Ratchet::<Sha1,>::from_bytes(&mut bytes,);
+    let ratchet = Ratchet::<Sha1, consts::U500,>::new(&mut bytes,);
 
     assert_eq!(bytes, [0; 20], "Input bytes was not cleared",);
 
-    let ptr = &*ratchet.state as *const _ as *const u8;
-    let size = ratchet.state.len();
-    let slice = unsafe { slice::from_raw_parts(ptr, size,) };
+    //Keep a pointer to the state to check that it is cleared on drop.
+    let slice = {
+      let ptr = &*ratchet.state as *const _ as *const u8;
+      let size = ratchet.state.len();
+      
+      unsafe { slice::from_raw_parts(ptr, size,) }
+    };
 
     mem::drop(ratchet,);
 
-    assert_eq!(slice, vec![0u8; size].as_slice(), "Inner state was not cleared",);
+    assert_eq!(vec![0u8; slice.len()].as_slice(), slice, "Inner state was not cleared",);
   }
   #[test]
   fn test_ratchet_output() {
     use std::collections::HashSet;
 
-    const OUT_LEN: usize = 256;
+    let rounds = if cfg!(features = "test-large-output",) { 10000 } else { 100 };
+    let bytes = Ratchet::<Sha1, consts::U500,>::default()
+      .take(2048,)
+      .collect::<HashSet<_>>();
+    
+    assert_eq!(256, bytes.len(), "Ratchet is not random unexpected",);
 
-    let mut ratchet1 = Ratchet::<Sha1,>::from_bytes(&mut [],);
-    let mut ratchet2 = Ratchet::<Sha1,>::new(
-      vec![0; <Sha1 as BlockInput>::BlockSize::USIZE].into_boxed_slice(),
-    );
+    let mut ratchet1 = Ratchet::<Sha1, consts::U500,>::default();
+    let ratchet2 = Ratchet::<Sha1, consts::U500,>::new([0; consts::U500::USIZE].as_mut(),);
 
     assert_eq!(&ratchet1.state, &ratchet2.state, "Initial states are not the same",);
 
-    let mut outputs = HashSet::new();
-    #[cfg(features = "test-large-output",)]
-    const ROUNDS: usize = 10000;
-    #[cfg(not(features = "test-output",),)]
-    const ROUNDS: usize = 100;
+    let iter = (&mut ratchet1).zip(ratchet2,)
+      .map(|(a, b,),| a == b,)
+      .enumerate()
+      .take(rounds,);
 
-    for _ in 1..=ROUNDS {
-      let out1 = ratchet1.advance(OUT_LEN,)
-        .expect("Error advancing ratchet1");
-      let out2 = ratchet2.advance(OUT_LEN,)
-        .expect("Error advancing ratchet2");
-
-      assert_eq!(out1, out2, "Ratchet output is not identical",);
-      assert!(outputs.insert(out1.clone(),), "Ratchet output has been produced before",);
+    for (round, check,) in iter {
+      assert!(check, "Ratchets diverged on round {}", round,);
     }
+
+    assert_ne!(ratchet1.next(), None, "Iterator finished",);
+
+    let ratchet2 = Ratchet::<Sha1, consts::U500,>::new([1; consts::U500::USIZE].as_mut(),);
+    let iter = (&mut ratchet1).zip(ratchet2,)
+      .map(|(a, b,),| a != b,)
+      .enumerate()
+      .take(rounds,);
+
+    for (round, check,) in iter {
+      assert!(check, "Ratchets converged on round {}", round,);
+    }
+
+    assert_ne!(ratchet1.next(), None, "Iterator finished",);
   }
 }
