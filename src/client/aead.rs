@@ -4,7 +4,7 @@
 //! Last Moddified --- 2019-04-28
 
 use ring::aead;
-use digest::generic_array::{ArrayLength, typenum::consts,};
+use crate::{generic_array::ArrayLength, typenum::consts,};
 
 /// A trait for message encryption algorithms.
 pub trait Algorithm {

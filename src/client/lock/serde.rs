@@ -71,10 +71,10 @@ mod tests {
 
   #[test]
   fn test_lock_client_serde() {
-    let ratchet = Ratchet::new(&mut [1; 100],);
+    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
     let public_key = [1; 32].into();
     let client = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet, public_key,);
-    let mut serialised = [0u8; 1024];
+    let mut serialised = [0; 1024];
     let serialised = {
       let writer = &mut serialised.as_mut();
 
@@ -86,9 +86,21 @@ mod tests {
 
       &serialised[..len]
     };
-    let other = serde_cbor::from_reader(serialised,)
+    let other: LockClient<Sha1, consts::U500, Aes256Gcm, consts::U1,> = serde_cbor::from_reader(serialised,)
       .expect("Error deserialising the LockClient");
+    let mut other_serialised = [0; 1024];
+    let other_serialised = {
+      let writer = &mut other_serialised.as_mut();
 
-    assert!(client == other, "LockClient deserialised incorrectly",);
+      serde_cbor::to_writer(writer, &other,)
+        .expect("Error serialising the LockClient");
+      
+      let len = writer.len();
+      let len = other_serialised.len() - len;
+
+      &other_serialised[..len]
+    };
+
+    assert!(serialised == other_serialised, "LockClient deserialised incorrectly",);
   }
 }

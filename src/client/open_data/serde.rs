@@ -3,7 +3,7 @@
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-05-04
 
-use super::*;
+use super::{OpenData, Algorithm, ArrayLength,};
 use crate::typenum::Unsigned;
 use ::serde::{
   ser::{Serialize, Serializer, SerializeTupleStruct,},

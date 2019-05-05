@@ -1,12 +1,17 @@
 //! Defines the double ratchet [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-05
 
-use crate::{message::Message, ratchet::Ratchet, typenum::{Unsigned, consts,},};
-use digest::{BlockInput, generic_array::{ArrayLength, GenericArray,},};
+use crate::{
+  ratchet::Ratchet,
+  message::Message,
+  typenum::consts,
+  generic_array::{ArrayLength, GenericArray,},
+};
+use rand::{RngCore, CryptoRng,};
 use x25519_dalek::{PublicKey, StaticSecret,};
-use std::{ops, iter::{TrustedLen, FromIterator,}, collections::HashMap,};
+use std::{collections::HashMap, iter::FromIterator,};
 
 pub mod aead;
 mod open_data;
@@ -35,13 +40,11 @@ pub struct Client<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, Aad
 }
 
 impl<D, S, A, R, L,> Client<D, S, A, R, L,>
-  where D: BlockInput,
-    S: ArrayLength<u8> + ops::Sub<D::BlockSize>,
+  where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: TrustedLen<Item = u8>,
-    GenericArray<u8, S>: FromIterator<u8>,
-    <S as ops::Sub<D::BlockSize>>::Output: Unsigned, {
+    Ratchet<D, S, R,>: RngCore + CryptoRng + Iterator<Item = u8>,
+    GenericArray<u8, S>: FromIterator<u8>, {
   /// Generates a pair of Ratchet chains.
   /// 
   /// Used to initialise the ratchet steps.
@@ -54,18 +57,18 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
     //Perform initial Diffie-Hellman exchange.
     let mut bytes = *key.diffie_hellman(&remote,).as_bytes();
     //Produce a Ratchet to generate state.
-    let mut ratchet = Ratchet::<D, S, R,>::new(&mut bytes,);
+    let mut ratchet = Ratchet::<D, S, R,>::from(bytes.as_mut(),);
     //Generate the first ratchet.
     let fst = {
       let state = &mut GenericArray::<u8, S>::from_iter(&mut ratchet,);
       
-      Ratchet::new(state,)
+      Ratchet::from(state.as_mut(),)
     };
     //Generate the first ratchet.
     let snd = {
-      let state = &mut GenericArray::<u8, S>::from_iter(ratchet,);
+      let state = &mut GenericArray::<u8, S>::from_iter(&mut ratchet,);
       
-      Ratchet::new(state,)
+      Ratchet::from(state.as_mut(),)
     };
 
     (fst, snd,)
@@ -100,33 +103,6 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
 
     Client { lock, open, private_key, local: false, }
   }
-}
-
-impl<D, S, A, R, L,> Client<D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: TrustedLen<Item = u8>, {
-  /// Encrypts the passed message.
-  /// 
-  /// The buffer will be cleared if the message is encrypted successfully.
-  /// 
-  /// # Params
-  /// 
-  /// message --- The Message to encrypt.  
-  pub fn lock(&mut self, message: &mut [u8],) -> Option<Message> {
-    self.lock.lock(message,)
-  }
-}
-
-impl<D, S, A, R, L,> Client<D, S, A, R, L,>
-  where D: BlockInput,
-    S: ArrayLength<u8> + ops::Sub<D::BlockSize>,
-    A: Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: TrustedLen<Item = u8>,
-    GenericArray<u8, S>: FromIterator<u8>,
-    <S as ops::Sub<D::BlockSize>>::Output: Unsigned, {
   /// Receives a message from the connected Client.
   /// 
   /// If successful the decrypted message is returned else the Message is returned with
@@ -163,7 +139,7 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
 
       //Generate skipped keys.
       for index in self.open.sent_count..message.header.message_index {
-        self.open.current_keys.insert(index, OpenData::from_iter(&mut self.open.ratchet,),);
+        self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
       }
       //Store the skipped keys.
       self.open.previous_keys.insert(
@@ -183,25 +159,22 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   }
 }
 
-#[cfg(test,)]
-impl<D, S, A, R, L,> PartialEq for Client<D, S, A, R, L,>
+impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   where S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>, {
-  #[inline]
-  fn eq(&self, rhs: &Self,) -> bool {
-    self.local == rhs.local
-    && self.open == rhs.open
-    && self.private_key.to_bytes() == rhs.private_key.to_bytes()
-    && self.local == rhs.local
+    A: Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  /// Encrypts the passed message.
+  /// 
+  /// The buffer will be cleared if the message is encrypted successfully.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to encrypt.  
+  pub fn lock(&mut self, message: &mut [u8],) -> Option<Message> {
+    self.lock.lock(message,)
   }
 }
-
-#[cfg(test,)]
-impl<D, S, A, R, L,> Eq for Client<D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>, {}
 
 #[cfg(test,)]
 mod tests {

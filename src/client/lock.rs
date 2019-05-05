@@ -1,15 +1,19 @@
 //! Defines the locking half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-05
 
 use super::{aead::{Algorithm, Aes256Gcm,}, OpenData,};
-use crate::{Ratchet, message::{Message, Header,}, typenum::{Unsigned, consts,},};
+use crate::{
+  ratchet::Ratchet,
+  message::{Message, Header,},
+  generic_array::ArrayLength,
+  typenum::{Unsigned, consts,},
+};
 use x25519_dalek::PublicKey;
 use ring::{aead::{self, SealingKey, Nonce, Aad,},};
-use digest::generic_array::ArrayLength;
-use clear_on_drop::ClearOnDrop;
-use std::{iter::TrustedLen, marker::PhantomData,};
+use rand::{RngCore, CryptoRng,};
+use std::marker::PhantomData;
 
 mod serde;
 
@@ -58,7 +62,7 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: TrustedLen<Item = u8>, {
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
   /// Encrypts the passed data and returns the `Message`.
   /// 
   /// The buffer will be cleared if the message is encrypted successfully.
@@ -86,17 +90,12 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
       mem::replace(&mut self.next_header, header,)
     };
     //Pad the message data to fit the output.
-    let mut data = {
-      //Clear the message data once done.
-      let data = ClearOnDrop::new(buffer,).iter().cloned()
-        .chain(iter::repeat(0,).take(A::TagLength::USIZE,),)
-        .take(std::usize::MAX,)
-        .collect::<Box<[u8]>>();
-
-      ClearOnDrop::new(data,)
-    };
+    let mut data = buffer.iter().cloned()
+      .chain(iter::repeat(0,).take(A::TagLength::USIZE,),)
+      .take(std::usize::MAX,)
+      .collect::<Box<[u8]>>();
     //Calculate the sealing data.
-    let sealing_data = OpenData::<A, L,>::from_iter(&mut self.ratchet,);
+    let sealing_data = OpenData::<A, L,>::new(&mut self.ratchet,);
     //Get the sealing key.
     let sealing_key = &SealingKey::new(algorithm, &sealing_data.key,).ok()?;
     //Get the nonce.
@@ -115,64 +114,42 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
       data.as_mut(),
       A::TagLength::USIZE,
     ).ok()?;
-
-    Some(Message {
+    let res = Some(Message {
       header,
       data: (&data[..length]).into(),
-    })
+    });
+
+    //Clear the data.
+    for b in buffer.iter_mut().chain(data.iter_mut(),) { *b = 0 }
+
+    res
   }
 }
-
-impl<D, S: ArrayLength<u8>, A, R, L,> Drop for LockClient<D, S, A, R, L,> {
-  #[inline]
-  fn drop(&mut self,) {
-    ClearOnDrop::new(&mut self.next_header,);
-  }
-}
-
-#[cfg(test,)]
-impl<D, S, A, R, L,> PartialEq for LockClient<D, S, A, R, L,>
-  where S: ArrayLength<u8>, {
-  #[inline]
-  fn eq(&self, rhs: &Self,) -> bool {
-    self.ratchet == rhs.ratchet
-    && self.next_header == rhs.next_header
-  }
-}
-
-#[cfg(test,)]
-impl<D, S, A, R, L,> Eq for LockClient<D, S, A, R, L,>
-  where S: ArrayLength<u8>, {}
 
 #[cfg(test,)]
 mod tests {
   use super::*;
-  use crate::client::aead::Aes256Gcm;
+  use crate::client::{aead::Aes256Gcm, open::OpenClient,};
   use sha1::Sha1;
 
   #[test]
   fn test_lock_client() {
-    let ratchet = Ratchet::new(&mut [1; 128],);
-    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet, [1; 32].into(),);
+    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
+    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet.clone(), [1; 32].into(),);
+    let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet, [1; 32].into(),);
     let msg_length = (std::usize::MAX - <Aes256Gcm as Algorithm>::TagLength::USIZE)
       / <Aes256Gcm as Algorithm>::BlockSize::USIZE
       * <Aes256Gcm as Algorithm>::BlockSize::USIZE;
 
     assert_eq!(lock.max_message_length(), msg_length, "Bad max message length",);
 
-    let msg = Message {
-      header: Header {
-        public_key: [1; 32].into(),
-        message_index: 0,
-        previous_step: 0,
-      },
-      data: Box::new([112, 116, 173, 228, 215, 157, 5, 3, 255, 188, 104, 98, 149, 169, 77, 122, 210, 88, 105, 139, 216, 176, 175, 161, 34, 242, 216, 148, 66, 80, 55, 82, 109, 61, 221, 194],),
-    };
-    let mut other = [1; 20];
-    let other = lock.lock(&mut other,)
+    let msg = [1; 20];
+    let other = lock.lock(&mut msg.clone(),)
       .expect("Error encrpyting message");
+    let other = open.open(other,)
+      .expect("Error decrypting message");
     
-    assert_eq!(msg, other, "Encrypted message does not match",);
     assert_eq!(lock.next_header.message_index, 1, "Sent count failed to update",);
+    assert_eq!(msg.as_ref(), other.as_ref(), "Message does not match",);
   }
 }

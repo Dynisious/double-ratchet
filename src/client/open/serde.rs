@@ -98,7 +98,7 @@ mod tests {
   
   #[test]
   fn test_open_client_serde() {
-    let ratchet = Ratchet::new(&mut [1; 100],);
+    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
     let sent_count = 1;
     let current_public_key = [1; 32].into();
     let current_keys = HashMap::new();
@@ -122,9 +122,21 @@ mod tests {
 
       &serialised[..len]
     };
-    let other = serde_cbor::from_reader(serialised,)
+    let other: OpenClient<Sha1, consts::U500, Aes256Gcm, consts::U1,> = serde_cbor::from_reader(serialised,)
       .expect("Error deserialising the OpenClient");
+    let mut other_serialised = [0u8; 1024];
+    let other_serialised = {
+      let writer = &mut other_serialised.as_mut();
 
-    assert!(client == other, "OpenClient deserialised incorrectly",);
+      serde_cbor::to_writer(writer, &other,)
+        .expect("Error serialising the OpenClient");
+      
+      let len = writer.len();
+      let len = other_serialised.len() - len;
+
+      &other_serialised[..len]
+    };
+
+    assert!(serialised == other_serialised, "OpenClient deserialised incorrectly",);
   }
 }

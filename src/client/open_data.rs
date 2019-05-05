@@ -1,12 +1,12 @@
 //! Defines the OpenData type.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-05
 
 use super::Algorithm;
-use digest::generic_array::{GenericArray, ArrayLength,};
-use clear_on_drop::ClearOnDrop;
-use std::{iter::{TrustedLen, IntoIterator,}, marker::PhantomPinned,};
+use crate::generic_array::{GenericArray, ArrayLength,};
+use rand::{RngCore, CryptoRng,};
+use std::marker::PhantomPinned;
 
 mod serde;
 
@@ -35,18 +35,16 @@ impl<A, L,> OpenData<A, L,>
   /// # Panics
   /// 
   /// * If the Iterator does not provide enough data.
-  pub fn from_iter<Iter,>(iter: Iter,) -> Box<Self>
-    where Iter: IntoIterator<Item = u8>,
-      <Iter as IntoIterator>::IntoIter: TrustedLen, {
-    let mut iter = iter.into_iter();
+  pub fn new<Rand,>(rand: &mut Rand,) -> Box<Self>
+    where Rand: CryptoRng + RngCore, {
     let mut res = Box::<Self>::default();
 
     //Initialise the key.
-    for (a, b,) in res.key.iter_mut().zip(&mut iter,) { *a = b  }
+    rand.fill_bytes(&mut res.key,);
     //Initialise the nonce.
-    for (a, b,) in res.nonce.iter_mut().zip(&mut iter,) { *a = b  }
+    rand.fill_bytes(&mut res.nonce,);
     //Initialise the aad.
-    for (a, b,) in res.aad.iter_mut().zip(&mut iter,) { *a = b  }
+    rand.fill_bytes(&mut res.aad,);
     
     res
   }
@@ -68,9 +66,13 @@ impl<A, L,> Drop for OpenData<A, L,>
   where A: Algorithm,
     L: ArrayLength<u8>, {
   fn drop(&mut self,) {
-    ClearOnDrop::new(self.key.as_mut_slice(),);
-    ClearOnDrop::new(self.nonce.as_mut_slice(),);
-    ClearOnDrop::new(self.aad.as_mut_slice(),);
+    //Iterate over all bytes.
+    let iter = self.key.as_mut_slice().iter_mut()
+      .chain(self.nonce.as_mut_slice(),)
+      .chain(self.aad.as_mut_slice(),);
+    
+    //Clear the bytes.
+    for b in iter { *b = 0 }
   }
 }
 
@@ -116,7 +118,7 @@ mod tests {
       open_data.aad = [34, 34, 218, 186, 162, 98, 66, 92, 136, 238].into();
       open_data
     };
-    let other = OpenData::<Aes256Gcm, consts::U10,>::from_iter(&mut ratchet,);
+    let other = OpenData::<Aes256Gcm, consts::U10,>::new(&mut ratchet,);
 
     assert_eq!(other, open_data, "OpenData::from_iter produced unexpected result",);
   }

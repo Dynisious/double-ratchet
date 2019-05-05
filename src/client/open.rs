@@ -1,16 +1,18 @@
 //! Defines the opening half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-05
 
 use super::{aead::{Algorithm, Aes256Gcm,}, OpenData,};
-use crate::{Ratchet, message::Message,
+use crate::{
+  ratchet::Ratchet,
+  message::Message,
   generic_array::ArrayLength,
   typenum::consts,
 };
-use clear_on_drop::ClearOnDrop;
+use rand::{RngCore, CryptoRng,};
 use x25519_dalek::PublicKey;
-use std::{iter::TrustedLen, collections::HashMap,};
+use std::collections::HashMap;
 
 mod serde;
 
@@ -56,7 +58,7 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: TrustedLen<Item = u8>, {
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
   /// Opens the passed message returning the message data.
   /// 
   /// If the message cannot be opened it is returned.
@@ -83,13 +85,13 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
     } else if message_index >= self.sent_count {
       //Generate skipped keys.
       for index in self.sent_count..message.header.message_index {
-        self.current_keys.insert(index, OpenData::from_iter(&mut self.ratchet,),);
+        self.current_keys.insert(index, OpenData::new(&mut self.ratchet,),);
       }
 
       //Update the count of sent messages.
       self.sent_count = message.header.message_index + 1;
       //Generate the opening key data.
-      OpenData::from_iter(&mut self.ratchet,)
+      OpenData::new(&mut self.ratchet,)
     } else {
       //Remove the skipped key
       match self.current_keys.remove(&message_index,) {
@@ -106,51 +108,21 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
       Err(_) => return Err(message),
     };
     let aad = Aad::from(open_data.aad.as_slice(),);
-    let res = aead::open_in_place(&key, nonce, aad, 0, ClearOnDrop::new(message.data.clone(),).as_mut(),)
-      .map(|data,| (&*data).into(),)
+    let mut data = message.data.clone();
+    let res = aead::open_in_place(&key, nonce, aad, 0, data.as_mut(),)
+      .map(|data,| data.as_ref().into(),)
       .or(Err(message),);
     
     //If there was an error store the opening data.
     if res.is_err() { self.current_keys.insert(message_index, open_data,); }
+    //Clear the data.
+    for b in data.iter_mut() { *b = 0 }
 
     res
   }
 }
 
 type KeyArray = [u8; 32];
-
-#[cfg(test,)]
-impl<D, S, A, R, L,> PartialEq for OpenClient<D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: Algorithm,
-    L: ArrayLength<u8>, {
-  fn eq(&self, rhs: &Self,) -> bool {
-    use std::hash::Hash;
-
-    fn cmp_hashmap<K, V, Cmp,>(lhs: &HashMap<K, V>, rhs: &HashMap<K, V>, mut cmp: Cmp,) -> bool
-      where K: Eq + Hash, Cmp: FnMut(&V, &V,) -> bool, {
-      lhs.len() == rhs.len()
-      && lhs.iter().all(move |(k, v_lhs,)| rhs.get(k,)
-        .filter(|v_rhs,| cmp(v_lhs, v_rhs,),)
-        .is_some(),
-      )
-    }
-
-    self.ratchet == rhs.ratchet
-    && self.sent_count == rhs.sent_count
-    && self.current_public_key.as_bytes() == rhs.current_public_key.as_bytes()
-    && cmp_hashmap(&self.current_keys, &rhs.current_keys, PartialEq::eq,)
-    && cmp_hashmap(&self.previous_keys, &rhs.previous_keys,
-      |lhs, rhs,| cmp_hashmap(lhs, rhs, PartialEq::eq,),
-    )
-  }
-}
-
-#[cfg(test,)]
-impl<D, S, A, R, L,> Eq for OpenClient<D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: Algorithm,
-    L: ArrayLength<u8>, {}
 
 #[cfg(test,)]
 mod tests {
@@ -160,7 +132,7 @@ mod tests {
 
   #[test]
   fn test_open_client() {
-    let ratchet = Ratchet::new(&mut [],);
+    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
     let public_key = [1; 32].into();
     let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet.clone(), public_key,);
     let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1,>::new(ratchet, public_key,);
