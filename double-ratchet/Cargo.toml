@@ -1,0 +1,21 @@
+
+[package]
+name = "double-ratchet"
+version = "0.1.1"
+authors = ["Dynisious <daniel.bechaz@gmail.com>"]
+edition = "2018"
+
+[features]
+test-large-data = []
+
+[dependencies]
+x25519-dalek = "0.5"
+hkdf = "0.7"
+ring = "0.14"
+serde_cbor = "0.9"
+serde = "1.0"
+ratchet = { version = "0.1", features = ["serde"] }
+rand = "0.6"
+
+[dev-dependencies]
+sha-1 = "0.8"
