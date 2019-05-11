@@ -1,7 +1,7 @@
 //! Defines serde for the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-11
 
 use super::*;
 use ::serde::{
@@ -9,7 +9,7 @@ use ::serde::{
   de::{Deserialize, Deserializer, SeqAccess, Visitor,},
 };
 
-static FIELDS: &[&str] = &[
+static STATE: &[&str] = &[
   "state",
 ];
 
@@ -31,33 +31,26 @@ impl<'de, D, S: 'de, R,> Deserialize<'de> for Ratchet<D, S, R,>
     use ::serde::de::Error;
     use std::fmt;
 
-    struct RatchetVisitor<D, S, R,> {
-      _data: PhantomData<(D, S, R,)>,
-    };
+    struct Visitor;
 
-    impl<'de, D, S: 'de, R,> Visitor<'de> for RatchetVisitor<D, S, R,>
-      where S: ArrayLength<u8>, {
+    impl<'de, D, S: 'de, R,> Visitor<'de> for Visitor {
       type Value = Ratchet<D, S, R,>;
 
       #[inline]
       fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
         write!(fmt, "Expecting a tuple of length {}", FIELDS.len(),)
       }
+      #[inline]
       fn visit_seq<A,>(self, mut seq: A,) -> Result<Self::Value, A::Error>
         where A: SeqAccess<'de>, {
-        let state = seq.next_element::<Box<[u8],>>()?
+        let mut state = seq.next_element::<Box<[u8],>>()?
           .ok_or(A::Error::missing_field(FIELDS[0],),)?;
         
-        let mut res = Self::Value::default();
-
-        res.state.copy_from_slice(state.as_ref(),);
-        Ok(res)
+        Ok(Self::Value::from(state.as_mut(),),);
       }
     }
 
-    let visitor = RatchetVisitor { _data: PhantomData, };
-
-    deserializer.deserialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(), visitor,)
+    deserializer.deserialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(), Visitor,)
   }
 }
 
@@ -73,7 +66,7 @@ pub mod tests {
     let serialised = {
       let writer = &mut &mut serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &ratchet,)
+      serde_cbor::to_writer_packed(writer, &ratchet,)
         .expect("Error serialising the Client");
       
       let len = writer.len();

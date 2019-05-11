@@ -1,7 +1,7 @@
 //! Defines serde for the Message type.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-25
+//! Last Moddified --- 2019-05-11
 
 use super::*;
 use ::serde::{
@@ -34,8 +34,18 @@ impl<'de,> Deserialize<'de> for Message {
     struct Visitor;
 
     impl<'de,> Visitor<'de> for Visitor {
+      type Value = Message;
+
       fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
-        write!(fmt, "a tuple of 3 elements",)
+        write!(fmt, "a tuple of length {}", FIELDS.len(),)
+      }
+      fn visit_seq<A,>(self, mut seq: A,) -> Result<Self::Value, A::Error> {
+        let header = seq.next_element()?
+          .ok_or(Error::missing_field(FIELDS[0],),)?;
+        let data = seq.next_element()?
+          .ok_or(Error::missing_field(FIELDS[1],),)?;
+
+        Ok(Message { header, data, })
       }
     }
     
@@ -59,7 +69,7 @@ mod tests {
     let serialised = {
       let writer = &mut serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &message,)
+      serde_cbor::ser::to_writer_packed_packed(writer, &message,)
         .expect("Error serialising Message");
       
       let len = writer.len();

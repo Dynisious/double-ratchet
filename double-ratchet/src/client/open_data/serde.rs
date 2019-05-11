@@ -1,13 +1,12 @@
 //! Defines serde for OpenData.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-11
 
-use super::{OpenData, Algorithm, ArrayLength,};
-use crate::typenum::Unsigned;
+use super::*;
 use ::serde::{
   ser::{Serialize, Serializer, SerializeTupleStruct,},
-  de::{Deserialize, Deserializer, SeqAccess, Visitor, Unexpected,},
+  de::{Deserialize, Deserializer, SeqAccess, Visitor,},
 };
 use std::marker::PhantomData;
 
@@ -17,7 +16,7 @@ static FIELDS: &[&str] = &[
   "aad",
 ];
 
-impl<A, L,> Serialize for Box<OpenData<A, L,>>
+impl<A, L,> Serialize for OpenData<A, L,>
   where A: Algorithm,
     L: ArrayLength<u8>, {
   fn serialize<S,>(&self, serializer: S,) -> Result<S::Ok, S::Error>
@@ -31,76 +30,60 @@ impl<A, L,> Serialize for Box<OpenData<A, L,>>
   }
 }
 
-impl<'de, A, L,> Deserialize<'de> for Box<OpenData<A, L,>>
+impl<'de, A, L,> Deserialize<'de> for OpenData<A, L,>
   where A: Algorithm,
     L: ArrayLength<u8>, {
   fn deserialize<D,>(deserializer: D,) -> Result<Self, D::Error>
     where D: Deserializer<'de>, {
-    use ::serde::de::Error;
+    use crate::typenum::Unsigned;
+    use ::serde::de::{Error, Unexpected,};
     use std::fmt;
 
-    struct OpenDataVisitor<A, L,> {
-      _data: PhantomData<(A, L,)>,
-    };
+    struct OpenDataVisitor<A, L,>(PhantomData<(A, L,)>,);
 
     impl<'de, A, L,> Visitor<'de> for OpenDataVisitor<A, L,>
       where A: Algorithm,
         L: ArrayLength<u8>, {
-      type Value = Box<OpenData<A, L,>>;
+      type Value = OpenData<A, L,>;
 
       fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
         write!(fmt, "a tuple of length {}", FIELDS.len(),)
       }
       fn visit_seq<Acc,>(self, mut seq: Acc,) -> Result<Self::Value, Acc::Error>
         where Acc: SeqAccess<'de>, {
-        let mut res = Self::Value::default();
-        
-        //Initialise the key.
         let key = seq.next_element::<Box<[u8]>>()?
-          .ok_or(Acc::Error::missing_field(FIELDS[0],),)?;
-        if key.len() != A::KeyLength::USIZE {
-          let unexp = format!("an array of {} bytes", key.len(),);
-          let unexp = Unexpected::Other(unexp.as_str());
-          let exp = format!("an array of {} bytes", A::KeyLength::USIZE,);
-          let exp = &exp.as_str();
+          .ok_or(Acc::Error::missing_field(FIELDS[0],),)
+          .and_then(|key,| {
+            let key = ClearOnDrop::new(key,);
 
-          return Err(Acc::Error::invalid_value(unexp, exp,));
-        }
-        for (i, b,) in key.iter().cloned().enumerate() { res.key[i] = b }
-        
-        //Initialise the nonce.
+            GenericArray::from_exact_iter(key.iter().copied(),)
+            .map(ClearOnDrop::new,)
+            .ok_or_else(|| Error::invalid_value(Unexpected::Seq, &format!("a slice of length {}", A::KeyLength::USIZE,).as_str()),)
+          },)?;
         let nonce = seq.next_element::<Box<[u8]>>()?
-          .ok_or(Acc::Error::missing_field(FIELDS[1],),)?;
-        if nonce.len() != A::NonceLength::USIZE {
-          let unexp = format!("an array of {} bytes", nonce.len(),);
-          let unexp = Unexpected::Other(unexp.as_str());
-          let exp = format!("an array of {} bytes", A::NonceLength::USIZE,);
-          let exp = &exp.as_str();
+          .ok_or(Acc::Error::missing_field(FIELDS[1],),)
+          .and_then(|nonce,| {
+            let nonce = ClearOnDrop::new(nonce,);
 
-          return Err(Acc::Error::invalid_value(unexp, exp,));
-        }
-        for (i, b,) in nonce.iter().cloned().enumerate() { res.nonce[i] = b }
-        
-        //Initialise the aad.
+            GenericArray::from_exact_iter(nonce.iter().copied(),)
+            .map(ClearOnDrop::new,)
+            .ok_or_else(|| Error::invalid_value(Unexpected::Seq, &format!("a slice of length {}", A::NonceLength::USIZE,).as_str()),)
+          },)?;
         let aad = seq.next_element::<Box<[u8]>>()?
-          .ok_or(Acc::Error::missing_field(FIELDS[2],),)?;
-        if aad.len() != L::USIZE {
-          let unexp = format!("an array of {} bytes", aad.len(),);
-          let unexp = Unexpected::Other(unexp.as_str());
-          let exp = format!("an array of {} bytes", L::USIZE,);
-          let exp = &exp.as_str();
+          .ok_or(Acc::Error::missing_field(FIELDS[2],),)
+          .and_then(|aad,| {
+            let aad = ClearOnDrop::new(aad,);
 
-          return Err(Acc::Error::invalid_value(unexp, exp,));
-        }
-        for (i, b,) in aad.iter().cloned().enumerate() { res.aad[i] = b }
+            GenericArray::from_exact_iter(aad.iter().copied(),)
+            .map(ClearOnDrop::new,)
+            .ok_or_else(|| Error::invalid_value(Unexpected::Seq, &format!("a slice of length {}", L::USIZE,).as_str()),)
+          },)?;
         
-        Ok(res)
+        Ok(OpenData { key, nonce, aad, })
       }
     }
 
-    let visitor = OpenDataVisitor { _data: PhantomData, };
-
-    deserializer.deserialize_tuple_struct(stringify!(OpenData,), FIELDS.len(), visitor,)
+    deserializer.deserialize_tuple_struct(stringify!(OpenData,), FIELDS.len(), OpenDataVisitor(PhantomData,),)
   }
 }
 
@@ -111,19 +94,16 @@ mod tests {
   
   #[test]
   fn test_open_data_serde() {
-    let data = {
-      let mut data = Box::<OpenData<Aes256Gcm, U10,>>::default();
-      
-      data.key = [1; 32].into();
-      data.nonce = [2; 12].into();
-      data.aad = [3; 10].into();
-      data
+    let data = OpenData::<Aes256Gcm, U10,> {
+      key: ClearOnDrop::new([1; 32].into(),),
+      nonce: ClearOnDrop::new([2; 12].into(),),
+      aad: ClearOnDrop::new([3; 10].into(),),
     };
     let mut serialised = [0u8; 1024];
     let serialised = {
       let writer = &mut serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &data,)
+      serde_cbor::ser::to_writer_packed(writer, &data,)
         .expect("Error serialising the OpenData");
       
       let len = writer.len();

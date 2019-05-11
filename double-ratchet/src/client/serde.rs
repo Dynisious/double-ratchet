@@ -1,7 +1,7 @@
 //! Defines serde for Client.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-11
 
 use super::*;
 use ::serde::{
@@ -27,7 +27,7 @@ impl<D, S, A, R, L,> Serialize for Client<D, S, A, R, L,>
 
     serializer.serialize_field(&self.lock,)?;
     serializer.serialize_field(&self.open,)?;
-    serializer.serialize_field(&self.private_key.to_bytes(),)?;
+    serializer.serialize_field(self.private_key.as_ref(),)?;
     serializer.serialize_field(&self.local,)?;
     serializer.end()
   }
@@ -42,9 +42,7 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Client<D, S, A, R, L,>
     use ::serde::de::Error;
     use std::fmt;
 
-    struct ClientVisitor<D, S, A, R, L,> {
-      _data: PhantomData<(D, S, A, R, L,)>,
-    }
+    struct ClientVisitor<D, S, A, R, L,>(PhantomData<(D, S, A, R, L,)>,);
 
     impl<'de, D, S: 'de, A, R, L,> Visitor<'de> for ClientVisitor<D, S, A, R, L,>
       where S: ArrayLength<u8>,
@@ -61,8 +59,8 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Client<D, S, A, R, L,>
           .ok_or(Acc::Error::missing_field(FIELDS[0],),)?;
         let open = seq.next_element()?
           .ok_or(Acc::Error::missing_field(FIELDS[1],),)?;
-        let private_key = seq.next_element::<[u8; 32]>()?
-          .ok_or(Acc::Error::missing_field(FIELDS[2],),)?.into();
+        let private_key = ClearOnDrop::new(seq.next_element::<[u8; 32]>()?
+          .ok_or(Acc::Error::missing_field(FIELDS[2],),)?.into(),);
         let local = seq.next_element()?
           .ok_or(Acc::Error::missing_field(FIELDS[3],),)?;
 
@@ -70,9 +68,7 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Client<D, S, A, R, L,>
       }
     }
 
-    let visitor = ClientVisitor { _data: PhantomData, };
-
-    deserializer.deserialize_tuple_struct(stringify!(Client,), FIELDS.len(), visitor,)
+    deserializer.deserialize_tuple_struct(stringify!(Client,), FIELDS.len(), ClientVisitor(PhantomData,),)
   }
 }
 
@@ -98,7 +94,7 @@ mod tests {
     let open = {
       let ratchet = Ratchet::new(&mut rand::thread_rng(),);
       let sent_count = 1;
-      let current_public_key = [1; 32].into();
+      let current_public_key = ClearOnDrop::new([1; 32].into(),);
       let current_keys = HashMap::new();
       let previous_keys = HashMap::new();
 
@@ -110,13 +106,13 @@ mod tests {
         previous_keys,
       }
     };
-    let private_key = [1; 32].into();
+    let private_key = ClearOnDrop::new([2; 32].into(),);
     let client = Client::<Sha1, consts::U500, Aes256Gcm, consts::U1,> { lock, open, private_key, local: true, };
     let mut serialised = [0u8; 2048];
     let serialised = {
       let writer = &mut serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &client,)
+      serde_cbor::ser::to_writer_packed(writer, &client,)
         .expect("Error serialising the Client");
       
       let len = writer.len();
@@ -130,7 +126,7 @@ mod tests {
     let other_serialised = {
       let writer = &mut other_serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &other,)
+      serde_cbor::ser::to_writer_packed(writer, &other,)
         .expect("Error serialising the Client");
       
       let len = writer.len();

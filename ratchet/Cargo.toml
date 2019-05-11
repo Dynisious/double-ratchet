@@ -1,6 +1,6 @@
 [package]
 name = "ratchet"
-version = "0.1.2"
+version = "1.0.0"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
 description = "A cryptographicly secure sudo random bytes stream"
@@ -13,6 +13,7 @@ hkdf = "0.7"
 digest = "0.8"
 serde = { version = "1.0", optional = true }
 rand_core = "0.4"
+clear_on_drop = "0.2"
 
 [dev-dependencies]
 sha-1 = "0.8"

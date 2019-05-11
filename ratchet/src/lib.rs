@@ -2,23 +2,37 @@
 //! 
 //! A [Ratchet] is a cryptographically secure sudo random number generator.
 //! 
-//! use `--features ratchet-serde` to provide serialisation.
+//! use `--features serde` to provide serde implementations.
+//! 
+//! # Examples
+//! 
+//! ```rust
+//! use ratchet::typenum::consts;
+//! use sha1::Sha1;
+//! use rand_core::RngCore;
+//! 
+//! let mut ratchet = ratchet::Ratchet::<Sha1, consts::U100, consts::U5,>::default();
+//! let mut bytes = [0; 1024];
+//! 
+//! ratchet.fill_bytes(&mut bytes,);
+//! ```
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-04
+//! Last Moddified --- 2019-05-11
 
-#![feature(trusted_len,)]
+#![feature(trusted_len, generator_trait, never_type,)]
 
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
 use rand_core::{RngCore, SeedableRng, CryptoRng, Error,};
-use std::{ops, iter::TrustedLen, marker::PhantomData,};
+use clear_on_drop::ClearOnDrop;
+use std::{ops, pin::Pin, iter::TrustedLen, marker::{PhantomData, Unpin,},};
 
 pub use digest;
 pub use digest::generic_array;
 pub use generic_array::typenum;
 
-use typenum::{Unsigned, Add1, Diff, bit::B1, consts,};
+use typenum::{Unsigned, Add1, Diff, NonZero, bit::B1, consts,};
 use generic_array::{GenericArray, ArrayLength,};
 
 #[cfg(feature = "serde")]
@@ -28,7 +42,7 @@ mod serde;
 pub struct Ratchet<Digest, State, Rounds = consts::U1,>
   where State: ArrayLength<u8>, {
   /// The internal state used to produce the next sudo random bytes.
-  state: Box<GenericArray<u8, State>>,
+  state: ClearOnDrop<Box<GenericArray<u8, State>>>,
   _data: PhantomData<(Digest, Rounds,)>,
 }
 
@@ -39,15 +53,56 @@ impl<D, S, R,> Ratchet<D, S, R,>
   /// # Params
   /// 
   /// rand --- The source of random state.  
-  pub fn new(rand: &mut dyn RngCore,) -> Self {
+  #[inline]
+  pub fn new<Rand,>(rand: &mut Rand,) -> Self
+    where Rand: RngCore + CryptoRng, {
     //Allocate the state.
     let mut res = Self::default();
 
-    //Initialise the state.
-    rand.fill_bytes(&mut res.state,);
+    res.reseed(rand,);
 
     res
   }
+  #[inline]
+  pub fn reseed<Rand,>(&mut self, rand: &mut Rand,)
+    where Rand: RngCore + CryptoRng, {
+    rand.fill_bytes(&mut self.state,)
+  }
+}
+
+impl<D, S, R,> Ratchet<D, S, R,>
+  where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
+    R: Unsigned + NonZero,
+    D::BlockSize: Clone,
+    <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
+    <S as ops::Add<B1>>::Output: ArrayLength<u8>,
+    <S as ops::Sub<B1>>::Output: Unsigned, {
+  pub fn next(&mut self,) -> u8 {
+    //The output from the hashing round.
+    let mut okm = GenericArray::<u8, Add1<S>>::default();
+    let mut okm = ClearOnDrop::new(okm.as_mut(),);
+
+    for _ in  0..R::USIZE {
+      let (salt, ikm,) = self.state.split_at(Diff::<S, D::BlockSize>::USIZE,);
+
+      //Perform the hash.
+      Hkdf::<D>::extract(None, ikm,).expand(salt, &mut okm,)
+        .expect("Failed to expand data");
+      //Update the internal state.
+      self.state.copy_from_slice(&okm[..S::USIZE],);
+    }
+
+    //Return the output.
+    okm[Diff::<S, B1>::USIZE]
+  }
+}
+
+impl<D, S, R, Rand,> From<&mut Rand> for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>,
+    Rand: RngCore + CryptoRng, {
+  #[inline]
+  fn from(rand: &mut Rand,) -> Self { Ratchet::new(rand,) }
 }
 
 impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
@@ -61,13 +116,12 @@ impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
   /// 
   /// state --- The initial state data.  
   fn from(state: &'a mut [u8],) -> Self {
-    //Allocate the state.
+    let state = ClearOnDrop::new(state,);
     let mut res = Self::default();
-
-    //Initialise the state.
-    for (a, b,) in res.state.iter_mut().zip(state.iter().cloned(),) { *a = b }
-    //Clear the input bytes.
-    for b in state.iter_mut() { *b = 0 }
+    let iter = res.state.iter_mut()
+      .zip(state.iter().copied(),);
+    
+    for (a, b,) in iter { *a = b }
 
     res
   }
@@ -77,7 +131,7 @@ impl<D, S, R,> Default for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {
   #[inline]
   fn default() -> Self {
-    let state = Box::new(GenericArray::default(),);
+    let state = ClearOnDrop::new(Box::default(),);
 
     Self { state, _data: PhantomData, }
   }
@@ -87,16 +141,18 @@ impl<D, S, R,> Clone for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {
   #[inline]
   fn clone(&self,) -> Self {
-    let state = self.state.clone();
+    let mut res = Self::default();
 
-    Self { state, _data: PhantomData, }
+    res.state.copy_from_slice(&self.state,);
+
+    res
   }
 }
 
 impl<D, S, R,> Iterator for Ratchet<D, S, R,>
   where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
     S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
-    R: Unsigned,
+    R: Unsigned + NonZero,
     D::BlockSize: Clone,
     <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
     <S as ops::Add<B1>>::Output: ArrayLength<u8>,
@@ -105,38 +161,13 @@ impl<D, S, R,> Iterator for Ratchet<D, S, R,>
   
   #[inline]
   fn size_hint(&self,) -> (usize, Option<usize>,) { (std::usize::MAX, None,) }
-  fn next(&mut self,) -> Option<Self::Item> {
-    //The output from the hashing.
-    let mut okm = GenericArray::<u8, Add1<S>>::default();
-
-    for _ in  0..R::USIZE {
-      let (salt, ikm,) = self.state.split_at(Diff::<S, D::BlockSize>::USIZE,);
-
-      //Perform the hash.
-      Hkdf::<D>::extract(None, ikm,).expand(salt, &mut okm,)
-        .expect("Failed to expand data");
-      //Update the internal state.
-      self.state.copy_from_slice(&okm[..S::USIZE],);
-    }
-
-    //Return the output.
-    let res = Some(okm[Diff::<S, B1>::USIZE]);
-
-    //Clear the stack.
-    for b in okm.iter_mut() { *b = 0 }
-
-    res
-  }
+  #[inline]
+  fn next(&mut self,) -> Option<Self::Item> { Some(self.next()) }
 }
 
 unsafe impl<D, S, R,> TrustedLen for Ratchet<D, S, R,>
   where S: ArrayLength<u8>,
     Self: Iterator<Item = u8>, {}
-
-impl<D, S: ArrayLength<u8>, R,> Drop for Ratchet<D, S, R,> {
-  #[inline]
-  fn drop(&mut self,) { for b in self.state.iter_mut() { *b = 0 } }
-}
 
 impl<D, S, R,> RngCore for Ratchet<D, S, R,>
   where S: ArrayLength<u8>,
@@ -147,7 +178,7 @@ impl<D, S, R,> RngCore for Ratchet<D, S, R,>
   fn next_u64(&mut self,) -> u64 {
     let mut bytes = [0; 8];
 
-    self.fill_bytes(&mut bytes,);
+    self.fill_bytes(bytes.as_mut(),);
     u64::from_ne_bytes(bytes,)
   }
   #[inline]
@@ -166,12 +197,30 @@ impl<D, S, R,> SeedableRng for Ratchet<D, S, R,>
   type Seed = GenericArray<u8, S>;
 
   #[inline]
-  fn from_seed(mut seed: Self::Seed,) -> Self { seed.as_mut_slice().into() }
+  fn from_seed(mut seed: Self::Seed,) -> Self { seed.as_mut().into() }
 }
 
 impl<D, S, R,> CryptoRng for Ratchet<D, S, R,>
   where S: ArrayLength<u8>,
     Self: TrustedLen<Item = u8>, {}
+
+impl<D, S, R,> ops::Generator for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>,
+    Self: TrustedLen<Item = u8> + Unpin, {
+  type Yield = u8;
+  type Return = !;
+
+  #[inline]
+  fn resume(self: Pin<&mut Self>,) -> ops::GeneratorState<Self::Yield, Self::Return> {
+    use std::slice;
+
+    let mut byte = 0;
+
+    self.get_mut().fill_bytes(slice::from_mut(&mut byte,),);
+
+    ops::GeneratorState::Yielded(byte,)
+  }
+}
 
 #[cfg(test,)]
 impl<D, S, R,> PartialEq for Ratchet<D, S, R,>
@@ -183,6 +232,12 @@ impl<D, S, R,> PartialEq for Ratchet<D, S, R,>
 #[cfg(test,)]
 impl<D, S, R,> Eq for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {}
+
+impl<D, S, R,> Drop for Ratchet<D, S, R,>
+  where S: ArrayLength<u8>, {
+  #[inline]
+  fn drop(&mut self,) {}
+}
 
 #[cfg(test,)]
 mod tests {
@@ -200,9 +255,9 @@ mod tests {
       
       bytes
     };
-    let ratchet = Ratchet::<Sha1, consts::U200,>::from(bytes.as_mut_slice(),);
+    let ratchet = Ratchet::<Sha1, consts::U200,>::from(bytes.as_mut(),);
 
-    assert_eq!(vec![0; bytes.len()], bytes.as_mut_slice(), "Input bytes was not cleared",);
+    assert_eq!(vec![0; bytes.len()], bytes.as_ref(), "Input bytes was not cleared",);
 
     //Keep a pointer to the state to check that it is cleared on drop.
     let slice = {
@@ -228,19 +283,17 @@ mod tests {
     assert_eq!(256, bytes.len(), "Ratchet is not random",);
 
     let mut ratchet1 = Ratchet::<Sha1, consts::U64,>::new(&mut rand::thread_rng(),);
-    let mut ratchet2 = Ratchet::<Sha1, consts::U64,>::from(ratchet1.state.clone().as_mut_slice(),);
+    let mut ratchet2 = Ratchet::<Sha1, consts::U64,>::from((*ratchet1.state.clone()).as_mut(),);
     let out1 = (&mut ratchet1).take(ROUNDS,).collect::<Box<_>>();
     let out2 = (&mut ratchet2).take(ROUNDS,).collect::<Box<_>>();
     
     assert_eq!(&ratchet1.state, &ratchet2.state, "States are not the same",);
     assert_eq!(out1, out2, "Ratchets gave different output.",);
-    assert_ne!(ratchet1.next(), None, "Iterator finished",);
-
+    
     let ratchet2 = Ratchet::<Sha1, consts::U64,>::new(&mut rand::thread_rng(),);
     let out1 = (&mut ratchet1).take(ROUNDS,).collect::<Box<_>>();
     let out2 = ratchet2.take(ROUNDS,).collect::<Box<_>>();
     
     assert_ne!(out1, out2, "Ratchets gave same output.",);
-    assert_ne!(ratchet1.next(), None, "Iterator finished",);
   }
 }

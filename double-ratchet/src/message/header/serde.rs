@@ -1,12 +1,12 @@
 //! Defines serde for the Header type.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-04-25
+//! Last Moddified --- 2019-05-11
 
 use super::*;
 use ::serde::{
   ser::{Serialize, Serializer, SerializeTupleStruct,},
-  de::{self, Deserialize, Deserializer, Visitor, SeqAccess,},
+  de::{Deserialize, Deserializer, SeqAccess, Visitor,},
 };
 
 static FIELDS: &[&str] = &[
@@ -31,6 +31,7 @@ impl<'de,> Deserialize<'de> for Header {
   #[inline]
   fn deserialize<D>(deserializer: D,) -> Result<Self, D::Error>
     where D: Deserializer<'de>, {
+    use ::serde::de::Error;
     use std::fmt;
 
     struct HeaderVisitor;
@@ -40,20 +41,20 @@ impl<'de,> Deserialize<'de> for Header {
 
       #[inline]
       fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
-        write!(fmt, "a `Header` instance",)
+        write!(fmt, "a tuple of length {}", FIELDS.len(),)
       }
       fn visit_seq<A>(self, mut seq: A,) -> Result<Self::Value, A::Error>
         where A: SeqAccess<'de>, {
         let public_key = {
           let public_key = seq.next_element::<[u8; 32]>()?
-            .ok_or(de::Error::missing_field(FIELDS[0],),)?;
+            .ok_or(Error::missing_field(FIELDS[0],),)?;
           
           public_key.into()
         };
         let message_index = seq.next_element()?
-          .ok_or(de::Error::missing_field(FIELDS[1],),)?;
+          .ok_or(Error::missing_field(FIELDS[1],),)?;
         let previous_step = seq.next_element()?
-          .ok_or(de::Error::missing_field(FIELDS[2],),)?;
+          .ok_or(Error::missing_field(FIELDS[2],),)?;
         
         Ok(Header { public_key, message_index, previous_step, })
       }
@@ -77,7 +78,7 @@ mod tests {
     let serialised = {
       let writer = &mut serialised.as_mut();
 
-      serde_cbor::to_writer(writer, &header,)
+      serde_cbor::ser::to_writer_packed(writer, &header,)
         .expect("Error serialising the Header");
       
       let len = writer.len();

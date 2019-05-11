@@ -1,7 +1,7 @@
 
 [package]
 name = "double-ratchet"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
 
@@ -16,6 +16,7 @@ serde_cbor = "0.9"
 serde = "1.0"
 ratchet = { version = "0.1", features = ["serde"] }
 rand = "0.6"
+clear_on_drop = "0.2"
 
 [dev-dependencies]
 sha-1 = "0.8"
