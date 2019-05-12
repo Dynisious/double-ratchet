@@ -1,9 +1,9 @@
 [package]
 name = "ratchet"
-version = "1.0.1"
+version = "1.1.0"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
-description = "A cryptographicly secure sudo random bytes stream"
+description = "A cryptographicly secure pseudo random bytes stream"
 license = "BSD-3-Clause"
 documentation = "https://docs.rs/ratchet"
 repository = "https://github.com/Dynisious/double-ratchet"

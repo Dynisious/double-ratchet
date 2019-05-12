@@ -1,7 +1,7 @@
 //! Defines serde for the [Ratchet] struct.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use super::*;
 use ::serde::{
@@ -9,7 +9,7 @@ use ::serde::{
   de::{Deserialize, Deserializer, SeqAccess, Visitor,},
 };
 
-static STATE: &[&str] = &[
+static FIELDS: &[&str] = &[
   "state",
 ];
 
@@ -19,7 +19,7 @@ impl<D, S, R,> Serialize for Ratchet<D, S, R,>
     where Ser: Serializer, {
     let mut serializer = serializer.serialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(),)?;
 
-    serializer.serialize_field::<[u8]>(self.state.as_slice(),)?;
+    serializer.serialize_field(self.state.as_ref(),)?;
     serializer.end()
   }
 }
@@ -31,9 +31,10 @@ impl<'de, D, S: 'de, R,> Deserialize<'de> for Ratchet<D, S, R,>
     use ::serde::de::Error;
     use std::fmt;
 
-    struct Visitor;
+    struct RatchetVisitor<D, S, R,>(PhantomData<(D, S, R,)>,);
 
-    impl<'de, D, S: 'de, R,> Visitor<'de> for Visitor {
+    impl<'de, D, S, R,> Visitor<'de> for RatchetVisitor<D, S, R,>
+      where S: ArrayLength<u8>, {
       type Value = Ratchet<D, S, R,>;
 
       #[inline]
@@ -46,11 +47,11 @@ impl<'de, D, S: 'de, R,> Deserialize<'de> for Ratchet<D, S, R,>
         let mut state = seq.next_element::<Box<[u8],>>()?
           .ok_or(A::Error::missing_field(FIELDS[0],),)?;
         
-        Ok(Self::Value::from(state.as_mut(),),);
+        Ok(Self::Value::from(state.as_mut(),),)
       }
     }
 
-    deserializer.deserialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(), Visitor,)
+    deserializer.deserialize_tuple_struct(stringify!(Ratchet,), FIELDS.len(), RatchetVisitor(PhantomData,),)
   }
 }
 
@@ -66,7 +67,7 @@ pub mod tests {
     let serialised = {
       let writer = &mut &mut serialised.as_mut();
 
-      serde_cbor::to_writer_packed(writer, &ratchet,)
+      serde_cbor::ser::to_writer_packed(writer, &ratchet,)
         .expect("Error serialising the Client");
       
       let len = writer.len();
@@ -74,7 +75,7 @@ pub mod tests {
 
       &serialised[..len]
     };
-    let other = serde_cbor::from_reader(serialised,)
+    let other = serde_cbor::de::from_reader(serialised,)
       .expect("Error deserialising the Ratchet");
 
     assert!(ratchet == other, "Ratchet deserialised incorrectly",);

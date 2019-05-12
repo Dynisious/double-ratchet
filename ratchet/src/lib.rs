@@ -1,6 +1,6 @@
 //! Defines the [Ratchet] struct.
 //! 
-//! A [Ratchet] is a cryptographically secure sudo random number generator.
+//! A [Ratchet] is a cryptographically secure pseudo random number generator.
 //! 
 //! use `--features serde` to provide serde implementations.
 //! 
@@ -39,10 +39,10 @@ use generic_array::{GenericArray, ArrayLength,};
 #[cfg(feature = "serde")]
 mod serde;
 
-/// A HKDF Ratchet which can be used to produce cyptographically secure sudo random bytes.
+/// A HKDF Ratchet which can be used to produce cyptographically secure pseudo random bytes.
 pub struct Ratchet<Digest, State, Rounds = consts::U1,>
   where State: ArrayLength<u8>, {
-  /// The internal state used to produce the next sudo random bytes.
+  /// The internal state used to produce the next pseudo random bytes.
   state: ClearOnDrop<GenericArray<u8, State>>,
   _data: PhantomData<(Digest, Rounds,)>,
 }
@@ -84,7 +84,7 @@ impl<D, S, R,> Ratchet<D, S, R,>
     <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
     <S as ops::Add<B1>>::Output: ArrayLength<u8>,
     <S as ops::Sub<B1>>::Output: Unsigned, {
-  /// Generates the next sudo random byte.
+  /// Generates the next pseudo random byte.
   pub fn next(&mut self,) -> u8 {
     //The output from the hashing round.
     let mut okm = GenericArray::<u8, Add1<S>>::default();
