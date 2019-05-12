@@ -18,9 +18,10 @@
 //! ```
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 #![feature(trusted_len, generator_trait, never_type,)]
+#![deny(missing_docs,)]
 
 use hkdf::Hkdf;
 use digest::{Input, BlockInput, FixedOutput, Reset,};
@@ -42,7 +43,7 @@ mod serde;
 pub struct Ratchet<Digest, State, Rounds = consts::U1,>
   where State: ArrayLength<u8>, {
   /// The internal state used to produce the next sudo random bytes.
-  state: ClearOnDrop<Box<GenericArray<u8, State>>>,
+  state: ClearOnDrop<GenericArray<u8, State>>,
   _data: PhantomData<(Digest, Rounds,)>,
 }
 
@@ -63,6 +64,11 @@ impl<D, S, R,> Ratchet<D, S, R,>
 
     res
   }
+  /// Reseeds the `Ratchet` with random state.
+  /// 
+  /// # Params
+  /// 
+  /// rand --- The source of randomness.  
   #[inline]
   pub fn reseed<Rand,>(&mut self, rand: &mut Rand,)
     where Rand: RngCore + CryptoRng, {
@@ -78,6 +84,7 @@ impl<D, S, R,> Ratchet<D, S, R,>
     <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
     <S as ops::Add<B1>>::Output: ArrayLength<u8>,
     <S as ops::Sub<B1>>::Output: Unsigned, {
+  /// Generates the next sudo random byte.
   pub fn next(&mut self,) -> u8 {
     //The output from the hashing round.
     let mut okm = GenericArray::<u8, Add1<S>>::default();
@@ -98,13 +105,6 @@ impl<D, S, R,> Ratchet<D, S, R,>
   }
 }
 
-impl<D, S, R, Rand,> From<&mut Rand> for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>,
-    Rand: RngCore + CryptoRng, {
-  #[inline]
-  fn from(rand: &mut Rand,) -> Self { Ratchet::new(rand,) }
-}
-
 impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {
   /// Creates a new `Ratchet` from state bytes.
@@ -115,13 +115,13 @@ impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
   /// # Params
   /// 
   /// state --- The initial state data.  
+  #[inline]
   fn from(state: &'a mut [u8],) -> Self {
     let state = ClearOnDrop::new(state,);
     let mut res = Self::default();
-    let iter = res.state.iter_mut()
-      .zip(state.iter().copied(),);
+    let len = usize::min(state.len(), res.state.len(),);
     
-    for (a, b,) in iter { *a = b }
+    res.state[..len].copy_from_slice(&state,);
 
     res
   }
@@ -131,9 +131,10 @@ impl<D, S, R,> Default for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {
   #[inline]
   fn default() -> Self {
-    let state = ClearOnDrop::new(Box::default(),);
-
-    Self { state, _data: PhantomData, }
+    Self {
+      state: ClearOnDrop::new(GenericArray::default(),),
+      _data: PhantomData,
+    }
   }
 }
 
@@ -233,44 +234,11 @@ impl<D, S, R,> PartialEq for Ratchet<D, S, R,>
 impl<D, S, R,> Eq for Ratchet<D, S, R,>
   where S: ArrayLength<u8>, {}
 
-impl<D, S, R,> Drop for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
-  #[inline]
-  fn drop(&mut self,) {}
-}
-
 #[cfg(test,)]
 mod tests {
   use super::*;
   use sha1::Sha1;
 
-  #[test]
-  fn test_ratchet_drop() {
-    use std::{slice, mem,};
-
-    let mut bytes = {
-      let mut bytes = GenericArray::<u8, consts::U500>::default();
-
-      rand::thread_rng().fill_bytes(&mut bytes,);
-      
-      bytes
-    };
-    let ratchet = Ratchet::<Sha1, consts::U200,>::from(bytes.as_mut(),);
-
-    assert_eq!(vec![0; bytes.len()], bytes.as_ref(), "Input bytes was not cleared",);
-
-    //Keep a pointer to the state to check that it is cleared on drop.
-    let slice = {
-      let ptr = &*ratchet.state as *const _ as *const u8;
-      let size = ratchet.state.len();
-      
-      unsafe { slice::from_raw_parts(ptr, size,) }
-    };
-
-    mem::drop(ratchet,);
-
-    assert_eq!(vec![0; slice.len()], slice, "Inner state was not cleared",);
-  }
   #[test]
   fn test_ratchet_output() {
     use std::collections::HashSet;

@@ -1,6 +1,6 @@
 [package]
 name = "ratchet"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
 description = "A cryptographicly secure sudo random bytes stream"
