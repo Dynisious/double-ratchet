@@ -1,7 +1,7 @@
 //! Defines serde for Client.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use super::*;
 use ::serde::{
@@ -14,7 +14,6 @@ static FIELDS: &[&str] = &[
   "lock",
   "open",
   "private_key",
-  "local",
 ];
 
 impl<D, S, A, R, L,> Serialize for Client<D, S, A, R, L,>
@@ -28,7 +27,6 @@ impl<D, S, A, R, L,> Serialize for Client<D, S, A, R, L,>
     serializer.serialize_field(&self.lock,)?;
     serializer.serialize_field(&self.open,)?;
     serializer.serialize_field(self.private_key.as_ref(),)?;
-    serializer.serialize_field(&self.local,)?;
     serializer.end()
   }
 }
@@ -61,10 +59,8 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Client<D, S, A, R, L,>
           .ok_or(Acc::Error::missing_field(FIELDS[1],),)?;
         let private_key = ClearOnDrop::new(seq.next_element::<[u8; 32]>()?
           .ok_or(Acc::Error::missing_field(FIELDS[2],),)?.into(),);
-        let local = seq.next_element()?
-          .ok_or(Acc::Error::missing_field(FIELDS[3],),)?;
 
-        Ok(Client { lock, open, private_key, local, })
+        Ok(Client { lock, open, private_key, })
       }
     }
 
@@ -107,7 +103,7 @@ mod tests {
       }
     };
     let private_key = ClearOnDrop::new([2; 32].into(),);
-    let client = Client::<Sha1, consts::U500, Aes256Gcm, consts::U1,> { lock, open, private_key, local: true, };
+    let client = Client::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> { lock, open, private_key, };
     let mut serialised = [0u8; 2048];
     let serialised = {
       let writer = &mut serialised.as_mut();
@@ -120,7 +116,7 @@ mod tests {
 
       &serialised[..len]
     };
-    let other: Client<Sha1, consts::U500, Aes256Gcm, consts::U1,> = serde_cbor::from_reader(serialised,)
+    let other: Client<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> = serde_cbor::from_reader(serialised,)
       .expect("Error deserialising the Client");
     let mut other_serialised = [0u8; 2048];
     let other_serialised = {

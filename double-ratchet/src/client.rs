@@ -1,71 +1,45 @@
-//! Defines the double ratchet [Client].
+//! Defines the double ratchet clients [LocalClient] and [RemoteClient].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use crate::{
   ratchet::Ratchet,
   message::Message,
-  typenum::consts,
+  typenum::consts::{self, U32,},
   generic_array::{ArrayLength, GenericArray,},
 };
 use clear_on_drop::ClearOnDrop;
 use rand::{RngCore, CryptoRng,};
 use x25519_dalek::{PublicKey, StaticSecret,};
-use std::collections::HashMap;
+use std::{collections::HashMap, io::{Read, Write,},};
 
 pub mod aead;
 mod open_data;
 mod lock;
 mod open;
+mod framed;
 mod serde;
 
 use self::{aead::{Algorithm, Aes256Gcm,}, open_data::OpenData, lock::*, open::*,};
-pub use self::lock::LockError;
+pub use self::{lock::Error, framed::*,};
 
-/// A double ratchet Client connected to a partner Client.
+/// The initiating end of a Double-Ratchet comunication.
 /// 
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
-pub struct Client<Digest, State, Algorithm: aead::Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = <Algorithm as aead::Algorithm>::TagLength,>
-  where State: ArrayLength<u8>,
-    AadLength: ArrayLength<u8>, {
-  /// The locking half of the `Client`.
-  lock: LockClient<Digest, State, Algorithm, Rounds, AadLength,>,
-  /// The opening half of the `Client`.
-  open: OpenClient<Digest, State, Algorithm, Rounds, AadLength,>,
-  /// The private key needed to decrypt messages received from the remote Client in the next ratchet step.
-  private_key: ClearOnDrop<GenericArray<u8, consts::U32>>,
-  /// Whether this initiator of the communication.
-  local: bool,
-}
+#[derive(Serialize, Deserialize,)]
+pub struct LocalClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<Client<Digest, State, Algorithm, Rounds, AadLength,>>,)
+  where State: 'static + ArrayLength<u8>,
+    Algorithm: aead::Algorithm,
+    AadLength: 'static + ArrayLength<u8>;
 
-impl<D, S, A, R, L,> Client<D, S, A, R, L,>
+impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
     Ratchet<D, S, R,>: RngCore + CryptoRng, {
-  /// Generates a pair of Ratchet chains.
-  /// 
-  /// Used to initialise the ratchet steps.
-  /// 
-  /// # Params
-  /// 
-  /// remote --- The PublicKey of the partner Client.  
-  /// key --- The private key pair of this Client.  
-  fn generate_chains(remote: &PublicKey, key: &StaticSecret,) -> (Ratchet<D, S, R,>, Ratchet<D, S, R,>,) {
-    //Perform initial Diffie-Hellman exchange.
-    let mut ratchet = *key.diffie_hellman(&remote,).as_bytes();
-    //Produce a Ratchet to generate state.
-    let mut ratchet = Ratchet::<D, S, R,>::from(ratchet.as_mut(),);
-    //Generate the first ratchet.
-    let fst = Ratchet::new(&mut ratchet,);
-    //Generate the first ratchet.
-    let snd = Ratchet::new(&mut ratchet,);
-
-    (fst, snd,)
-  }
-  /// Connects to a remote Client.
+  /// Initiates communication with a remote Client.
   /// 
   /// The function preceeds a call to `accept`.
   /// 
@@ -73,115 +47,31 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// 
   /// remote --- The public key of the remote Client.  
   /// private_key --- The private key to connect using.  
-  pub fn connect(remote: PublicKey, private_key: StaticSecret,) -> Box<Self> {
-    let (lock, open,) = Self::generate_chains(&remote, &private_key,);
-    let lock = LockClient::new(lock, (&private_key).into(),);
-    let open = OpenClient::new(open, remote,);
-    let private_key = ClearOnDrop::new(private_key.to_bytes().into(),);
+  pub fn connect(remote: &PublicKey, private_key: &StaticSecret,) -> Self {
+    let mut client = Box::<Client<D, S, A, R, L,>>::default();
+    let mut ratchet = Ratchet::from(private_key.diffie_hellman(remote,).as_bytes().clone().as_mut(),);
 
-    Box::new(Client { lock, open, private_key, local: true, },)
-  }
-  /// Accepts a connection from a remote Client.
-  /// 
-  /// The function is called after a preceeding `connect` call.
-  /// 
-  /// # Params
-  /// 
-  /// remote --- The public key of the remote Client.  
-  /// private_key --- The private key to connect using.  
-  pub fn accept(remote: PublicKey, private_key: StaticSecret,) -> Box<Self> {
-    let (open, lock,) = Self::generate_chains(&remote, &private_key,);
-    let lock = LockClient::new(lock, (&private_key).into(),);
-    let open = OpenClient::new(open, remote,);
-    let private_key = ClearOnDrop::new(private_key.to_bytes().into(),);
+    client.private_key.copy_from_slice(&StaticSecret::new(&mut rand::thread_rng(),).to_bytes().as_ref(),);
 
-    Box::new(Client { lock, open, private_key, local: true, },)
+    client.lock.ratchet.reseed(&mut ratchet,);
+    client.lock.next_header.public_key.copy_from_slice(PublicKey::from(private_key,).as_bytes().as_ref(),);
+
+    client.open.ratchet.reseed(&mut ratchet,);
+    client.open.current_public_key.copy_from_slice(remote.as_bytes().as_ref(),);
+
+    LocalClient(client,)
   }
   /// Receives a message from the connected Client.
   /// 
-  /// If the message is decrypted successfully the message data is returned.
+  /// If the message is decrypted successfully the message data is appended to `buffer`.
   /// 
   /// # Params
   /// 
   /// message --- The Message to decrypt.  
-  pub fn open(&mut self, message: Message,) -> Result<Box<[u8]>, Message> {
-    use std::{mem, hint,};
-
-    clear_on_drop::clear_stack_on_return_fnonce(1, move || {
-      //Remember the current state for rollback purposes.
-      let sent_count = self.open.sent_count;
-      let mut ratchet = self.open.ratchet.clone();
-
-      if self.open.current_public_key.as_ref() == message.header.public_key.as_bytes() {
-        //Generate any skipped keys,
-        if self.open.sent_count <= message.header.message_index {
-          //Update the sent count.
-          self.open.sent_count = message.header.message_index + 1;
-          //Generate the skipped keys.
-          for index in sent_count..self.open.sent_count {
-            self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
-          }
-        }
-
-        let res = self.open.open(message,);
-
-        if res.is_err() {
-          //Remove the unneeded keys.
-          for index in sent_count..self.open.sent_count {
-            self.open.current_keys.remove(&index,);
-          }
-          //Reset the sent count.
-          self.open.sent_count = sent_count;
-          //Reset the ratchet.
-          mem::swap(&mut self.open.ratchet, &mut ratchet,);
-        }
-
-        res
-      } else {
-        //Rememeber how many messages are in this ratchet step.
-        let previous_step = message.header.previous_step;
-        //Remember the current public key.
-        let current_public_key = self.open.current_public_key.clone();
-        //Update the sent count.
-        self.open.sent_count = message.header.message_index + 1;
-        //Generate any skipped keys in the current step.
-        for index in sent_count..previous_step {
-          self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
-        }
-        //Update the current keys.
-        let current_keys = mem::replace(
-          &mut self.open.current_keys,
-          HashMap::with_capacity(self.open.sent_count as usize,),
-        );
-        //Remember the current keys.
-        self.open.previous_keys.insert(KeyBytes::from(*current_public_key,), current_keys,);
-        //Update the public key.
-        self.open.current_public_key.copy_from_slice(message.header.public_key.as_bytes(),);
-        
-        let res = self.open(message,);
-
-        if res.is_err() {
-          //Reset the current keys.
-          self.open.current_keys = match self.open.previous_keys.remove(&KeyBytes::from(*current_public_key,),) {
-            Some(v) => v,
-            _ => unsafe { hint::unreachable_unchecked() },
-          };
-          //Reset the sent count.
-          self.open.sent_count = sent_count;
-          //Reset the public key.
-          self.open.current_public_key = current_public_key;
-          
-          //Forget the unused keys.
-          for index in sent_count..previous_step {
-            self.open.current_keys.remove(&index,);
-          }
-          //Reset the ratchet.
-          mem::swap(&mut self.open.ratchet, &mut ratchet,);
-        }
-
-        res
-      }
-    },)
+  /// buffer --- The buffer to write the decrypted message too.  
+  #[inline]
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
+    self.0.open(message, buffer, true,)
   }
   /// Encrypts the passed message.
   /// 
@@ -190,8 +80,274 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// # Params
   /// 
   /// message --- The Message to encrypt.  
-  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, LockError> {
+  #[inline]
+  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    self.0.lock(message,)
+  }
+  /// Returns a [Framed] around this `Client`.
+  /// 
+  /// # Params
+  /// 
+  /// io --- The Write/Read to send/receive messages from.  
+  #[inline]
+  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,>
+    where Io: Read + Write, {
+    Framed::new(io, self.0, true,)
+  }
+}
+
+/// The partner end of a Double-Ratchet comunication.
+/// 
+/// Bare in mind that Both Clients must be constructed with the same ADT parameters if
+/// they are expected to work correctly.
+#[derive(Serialize, Deserialize,)]
+pub struct RemoteClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<Client<Digest, State, Algorithm, Rounds, AadLength,>>,)
+  where State: 'static + ArrayLength<u8>,
+    Algorithm: aead::Algorithm,
+    AadLength: 'static + ArrayLength<u8>;
+
+impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  /// Accepts communication from a remote Client.
+  /// 
+  /// The function follows a call to `connect`.
+  /// 
+  /// # Params
+  /// 
+  /// remote --- The public key of the remote Client.  
+  /// private_key --- The private key to connect using.  
+  pub fn accept(remote: &PublicKey, private_key: &StaticSecret,) -> Self {
+    let mut client = Box::<Client<D, S, A, R, L,>>::default();
+    let mut ratchet = Ratchet::from(private_key.diffie_hellman(remote,).as_bytes().clone().as_mut(),);
+
+    client.private_key.copy_from_slice(StaticSecret::new(&mut rand::thread_rng(),).to_bytes().as_ref(),);
+
+    client.open.ratchet.reseed(&mut ratchet,);
+    client.open.current_public_key.copy_from_slice(remote.as_bytes().as_ref(),);
+
+    client.lock.ratchet.reseed(&mut ratchet,);
+    client.lock.next_header.public_key.copy_from_slice(PublicKey::from(private_key,).as_bytes().as_ref(),);
+
+    RemoteClient(client,)
+  }
+  /// Receives a message from the connected Client.
+  /// 
+  /// If the message is decrypted successfully the message data is appended to `buffer`.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to decrypt.  
+  /// buffer --- The buffer to write the decrypted message too.  
+  #[inline]
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
+    self.0.open(message, buffer, false,)
+  }
+  /// Encrypts the passed message.
+  /// 
+  /// The buffer will be cleared if the message is encrypted successfully.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to encrypt.  
+  #[inline]
+  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    self.0.lock(message,)
+  }
+  /// Returns a [Framed] around this `Client`.
+  /// 
+  /// # Params
+  /// 
+  /// io --- The Write/Read to send/receive messages from.  
+  #[inline]
+  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,>
+    where Io: Read + Write, {
+    Framed::new(io, self.0, false,)
+  }
+}
+
+/// A double ratchet Client connected to a partner Client.
+/// 
+/// Bare in mind that Both Clients must be constructed with the same ADT parameters if
+/// they are expected to work correctly.
+struct Client<Digest, State, Algorithm, Rounds, AadLength,>
+  where State: ArrayLength<u8>,
+    Algorithm: aead::Algorithm,
+    AadLength: ArrayLength<u8>, {
+  /// The locking half of the `Client`.
+  lock: LockClient<Digest, State, Algorithm, Rounds, AadLength,>,
+  /// The opening half of the `Client`.
+  open: OpenClient<Digest, State, Algorithm, Rounds, AadLength,>,
+  /// The private key needed to decrypt messages received from the remote Client in the next ratchet step.
+  private_key: ClearOnDrop<GenericArray<u8, U32>>,
+}
+
+impl<D, S, A, R, L,> Client<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  /// Receives a message from the connected Client.
+  /// 
+  /// If the message is decrypted successfully the message data is appended to `buffer`.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to decrypt.  
+  /// buffer --- The buffer to write the decrypted message too.  
+  /// local --- Indicates whether this Client is the initiator of the communication for ratchet steps.  
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>, local: bool,) -> Result<&'a mut [u8], Message> {
+    use std::{mem, hint,};
+
+    //Remember the ratchet state.
+    let mut ratchet = self.open.ratchet.clone();
+    let mut sent_count = 0;
+    let mut sent_count = ClearOnDrop::new(&mut sent_count,);
+    //Ensure that a result is created.
+    let res;
+
+    //If the message is part of the current step open it.
+    if self.open.current_public_key.as_ref() == message.header.public_key.as_ref() {
+      //Update the sent count.
+      *sent_count = mem::replace(&mut self.open.sent_count, message.header.message_index + 1,);
+
+      //Generate any skipped keys.
+      if *sent_count <= message.header.message_index {
+        //Generate the skipped keys.
+        for index in *sent_count..self.open.sent_count {
+          self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
+        }
+      }
+
+      res = self.open.open(message, buffer,);
+
+      //Rollback if there was an error.
+      if res.is_err() {
+        //Delete the generated keys.
+        for index in *sent_count..self.open.sent_count {
+          self.open.current_keys.remove(&index,);
+        }
+      }
+    //If the message is part of the next step advance the step.
+    } else {
+      //Update the sent count.
+      *sent_count = mem::replace(&mut self.open.sent_count, 0,);
+
+      //Update the current public key.
+      let current_public_key = self.open.current_public_key.clone();
+      self.open.current_public_key.copy_from_slice(&message.header.public_key,);
+
+      //Update the private key.
+      let private_key = self.private_key.clone();
+      self.private_key.copy_from_slice(
+        ClearOnDrop::new(
+          &mut StaticSecret::new(&mut rand::thread_rng(),).to_bytes(),
+        ).as_ref(),
+      );
+
+      //Generate any skipped keys.
+      if *sent_count <= message.header.previous_step {
+        //Generate the skipped keys.
+        for index in *sent_count..message.header.previous_step {
+          self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
+        }
+      }
+
+      //Move the current keys into the previous keys.
+      self.open.previous_keys.insert(
+        current_public_key.clone(),
+        //Update the current keys.
+        mem::replace(
+          &mut self.open.current_keys,
+          HashMap::with_capacity(message.header.message_index as usize + 1,),
+        ),
+      );
+
+      //Update the lock state.
+      let mut lock_client = mem::replace(&mut self.lock, LockClient::default(),);
+      self.lock.next_header.public_key.copy_from_slice(&self.private_key,);
+
+      //Reseed the chains.
+      let mut step_seed = Ratchet::from(unsafe {
+        //These calls are safe because we can only initialise these fields with these
+        //types or deserialisation.
+        let private = mem::transmute::<_, &StaticSecret>(&self.private_key,);
+        let public = mem::transmute::<_, &PublicKey>(&self.open.current_public_key,);
+
+        private.diffie_hellman(public,).as_bytes().clone()
+      }.as_mut(),);
+      if local {
+        self.lock.ratchet.reseed(&mut step_seed,);
+        self.open.ratchet.reseed(&mut step_seed,);
+      } else {
+        self.open.ratchet.reseed(&mut step_seed,);
+        self.lock.ratchet.reseed(&mut step_seed,);
+      }
+
+      let previous_step = message.header.previous_step;
+
+      res = self.open(message, buffer, local,);
+
+      //Rollback if there was an error.
+      if res.is_err() {
+        //Rollback the lock state.
+        self.lock = mem::replace(&mut lock_client, LockClient::default(),);
+
+        //Rollback the current keys.
+        match self.open.previous_keys.remove(&current_public_key,) {
+          Some(current_keys) => self.open.current_keys = current_keys,
+          //This should always be safe because we are rolling back a previous change.
+          None => unsafe { hint::unreachable_unchecked() },
+        }
+
+        //Delete generated keys.
+        if *sent_count <= previous_step {
+          for index in *sent_count..previous_step {
+            self.open.current_keys.remove(&index,);
+          }
+        }
+
+        //Rollback the private key.
+        self.private_key = private_key;
+        //Rollback the current public key.
+        self.open.current_public_key = current_public_key;
+      }
+    }
+
+    if res.is_err() {
+      //Rollback the sent count.
+      self.open.sent_count = *sent_count;
+      //Rollback the ratchet.
+      self.open.ratchet = mem::replace(&mut ratchet, Ratchet::default(),);
+    }
+
+    res
+  }
+  /// Encrypts the passed message.
+  /// 
+  /// The buffer will be cleared if the message is encrypted successfully.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to encrypt.  
+  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
     self.lock.lock(message,)
+  }
+}
+
+impl<D, S, A, R, L,> Default for Client<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>, {
+  #[inline]
+  fn default() -> Self {
+    Self {
+      lock: LockClient::default(),
+      open: OpenClient::default(),
+      private_key: ClearOnDrop::new(GenericArray::default(),),
+    }
   }
 }
 
@@ -202,43 +358,47 @@ mod tests {
 
   #[test]
   fn test_client() {
-    let open = StaticSecret::from([1; 32],);
-    let lock = StaticSecret::from([2; 32],);
-    let pub_lock = (&lock).into();
-    let mut lock = Client::<Sha1, consts::U500, aead::Aes256Gcm, consts::U1,>::connect((&open).into(), lock,);
-    let mut open = Client::<Sha1, consts::U500, aead::Aes256Gcm, consts::U1,>::accept(pub_lock, open,);
+    use std::iter::Extend;
+
+    let open_sec = StaticSecret::from([1; 32],);
+    let lock_sec = StaticSecret::from([2; 32],);
+    let mut lock = LocalClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1,>::connect(&(&open_sec).into(), &lock_sec,);
+    let mut open = RemoteClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1,>::accept(&(&lock_sec).into(), &open_sec,);
     let msg = std::iter::successors(Some(1), |&i,| Some(i + 1),)
       .take(100,)
       .collect::<Box<[u8]>>();
     
     //Test sending.
-    let mut buffer = msg.clone();
+    let mut buffer = msg.iter().copied().collect::<Vec<_>>();
     let message = lock.lock(&mut buffer,)
       .expect("Error locking first message");
     
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
     //Test receiving.
-    let buffer = open.open(message,)
-      .expect("Error opening first message");
+    buffer.clear();
+    open.open(message, &mut buffer,).expect("Error opening first message");
     
-    assert_eq!(buffer, msg, "First received message corrupted",);
+    assert_eq!(buffer, msg.as_ref(), "First received message corrupted",);
     
     //Test sending other way.
     open.lock(&mut [0; 1024],).expect("Error encrypting throwaway message",);
-    let mut buffer = msg.clone();
-    let message = open.lock(&mut buffer,)
-      .expect("Error locking second message");
+    buffer.clear();
+    buffer.extend(msg.iter().copied(),);
+    let message = open.lock(&mut buffer,).expect("Error locking second message");
     
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
     //Test corrupted message.
-    lock.open(Message { data: Box::new([1; 100]), ..message },)
+    buffer.clear();
+    lock.open(Message { data: Box::new([1; 100]), ..message }, &mut buffer,)
       .expect_err("Opened corrupted message");
+    
     //Test corrupted recovery.
-    let buffer = lock.open(message,)
+    buffer.clear();
+    let buffer = lock.open(message, &mut buffer,)
       .expect("Error opening second message");
     
-    assert_eq!(buffer, msg, "Second received message corrupted",);
+    assert_eq!(buffer, msg.as_ref(), "Second received message corrupted",);
   }
 }

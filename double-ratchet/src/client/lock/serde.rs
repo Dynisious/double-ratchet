@@ -1,7 +1,7 @@
 //! Defines serde for LockClient.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use super::*;
 use ::serde::{
@@ -67,7 +67,14 @@ mod tests {
   fn test_lock_client_serde() {
     let ratchet = Ratchet::new(&mut rand::thread_rng(),);
     let public_key = [1; 32].into();
-    let client = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,>::new(ratchet, public_key,);
+    let client = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> {
+      ratchet,
+      next_header: Header {
+        public_key,
+        ..Header::default()
+      },
+      ..LockClient::default()
+    };
     let mut serialised = [0; 1024];
     let serialised = {
       let writer = &mut serialised.as_mut();

@@ -1,18 +1,17 @@
 //! Defines the opening half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use super::{aead::Algorithm, OpenData,};
 use crate::{
   ratchet::Ratchet,
   message::Message,
-  typenum::consts::U32,
   generic_array::{ArrayLength, GenericArray,},
+  typenum::consts::U32,
 };
-use clear_on_drop::ClearOnDrop;
-use x25519_dalek::PublicKey;
-use std::{ops, collections::HashMap,};
+use clear_on_drop::{ClearOnDrop, clear::Clear,};
+use std::collections::HashMap;
 
 mod serde;
 
@@ -26,42 +25,30 @@ pub(crate) struct OpenClient<Digest, State, Algorithm, Rounds, AadLength,>
   /// The number of messages sent under the current PublicKey.
   pub sent_count: u32,
   /// The current PublicKey of the remote Client.
-  pub current_public_key: ClearOnDrop<KeyBytes>,
+  pub current_public_key: ClearOnDrop<GenericArray<u8, U32>>,
   /// The previous OpenData under the current PublicKey.
   pub current_keys: HashMap<u32, OpenData<Algorithm, AadLength,>>,
   /// The OpenData under the previous PublicKeys.
-  pub previous_keys: HashMap<KeyBytes, HashMap<u32, OpenData<Algorithm, AadLength,>>>,
+  pub previous_keys: HashMap<ClearOnDrop<GenericArray<u8, U32>>, HashMap<u32, OpenData<Algorithm, AadLength,>>>,
 }
 
 impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>, {
-  /// Returns a new OpenClient using the passed ratchet and public key.
-  /// 
-  /// # Params
-  /// 
-  /// ratchet --- The Ratchet to produce opening data.  
-  /// public_key --- The PublicKey of the partner Client.  
-  pub fn new(ratchet: Ratchet<D, S, R,>, public_key: PublicKey,) -> Self {
-    let current_public_key = ClearOnDrop::new(public_key.as_bytes().clone().into(),);
-
-    Self {
-      ratchet,
-      current_public_key,
-      sent_count: 0,
-      current_keys: HashMap::new(),
-      previous_keys: HashMap::new(),
-    }
-  }
-  /// Opens the passed message returning the message data.
+  /// Opens the passed message and appends the data to `buffer`.
   /// 
   /// If the message cannot be opened it is returned.
   /// 
   /// # Params
   /// 
   /// message --- The message to open.  
-  pub fn open(&mut self, message: Message,) -> Result<Box<[u8]>, Message> {
+  /// buffer --- The buffer to append the decrypted message too.  
+  /// 
+  /// # Warning
+  /// 
+  /// Only call this function after ensuring that `OpenData` exists for the message.
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
     use ring::aead::{self, OpeningKey, Nonce, Aad,};
     use std::hint;
     
@@ -69,89 +56,113 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
       //The data to open this message.
       let open_data = match self.current_keys.remove(&message.header.message_index,) {
         Some(v) => v,
-        _ => return Err(message),
+        None => return Err(message),
       };
       let key = match OpeningKey::new(A::algorithm(), &open_data.key,) {
         Ok(v) => v,
+        //This is safe because we get the value from OpenData.
         _ => unsafe { hint::unreachable_unchecked() },
       };
       let nonce = match Nonce::try_assume_unique_for_key(&open_data.nonce,) {
         Ok(v) => v,
+        //This is safe because we get the value from OpenData.
         _ => unsafe { hint::unreachable_unchecked() },
       };
       let aad = Aad::from(open_data.aad.as_ref(),);
-      let mut data = ClearOnDrop::new(message.data.clone(),);
-      
+      //The original length of the buffer.
+      let buffer_len = buffer.len();
+      //The message data to open.
+      let data = {
+        buffer.extend(message.data.iter().copied(),);
+
+        &mut buffer[buffer_len..]
+      };
       //Open the message.
-      aead::open_in_place(&key, nonce, aad, 0, data.as_mut(),).ok()
-      .map(|data,| data.as_ref().into(),)
-      .ok_or_else(move || {
-        self.current_keys.insert(message.header.message_index, open_data,); 
-      
-        message
-      },)
+      let data_len = aead::open_in_place(&key, nonce, aad, 0, data,).ok()
+        //Get the length of the unencrypted data.
+        .map(|data,| data.len(),)
+        .ok_or_else(move || {
+          //Store the key for a later attempt.
+          self.current_keys.insert(message.header.message_index, open_data,); 
+        
+          message
+        },)?;
+      //The length of buffer which is used.
+      let len = buffer_len + data_len;
+
+      //Clear the unused data.
+      buffer[len..].clear();
+      //Remove the unused data.
+      buffer.truncate(len,);
+
+      Ok(&mut buffer[buffer_len..])
     },)
   }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Default, Hash,)]
-pub(crate) struct KeyBytes(pub GenericArray<u8, U32>,);
-
-impl ops::Deref for KeyBytes {
-  type Target = GenericArray<u8, U32>;
-
+impl<D, S, A, R, L,> Default for OpenClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>, {
   #[inline]
-  fn deref(&self,) -> &GenericArray<u8, U32> { &self.0 }
+  fn default() -> Self {
+    Self {
+      ratchet: Ratchet::default(),
+      sent_count: 0,
+      current_public_key: ClearOnDrop::new(GenericArray::default(),),
+      current_keys: HashMap::default(),
+      previous_keys: HashMap::default(),
+    }
+  }
 }
 
-impl ops::DerefMut for KeyBytes {
-  #[inline]
-  fn deref_mut(&mut self,) -> &mut GenericArray<u8, U32> { &mut self.0 }
-}
-
-impl From<[u8; 32]> for KeyBytes {
-  #[inline]
-  fn from(from: [u8; 32],) -> Self { KeyBytes(from.into(),) }
-}
-
-impl From<GenericArray<u8, U32>> for KeyBytes {
-  #[inline]
-  fn from(from: GenericArray<u8, U32>,) -> Self { KeyBytes(from,) }
+impl<D, S, A, R, L,> Drop for OpenClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>, {
+  fn drop(&mut self,) { self.sent_count = 0; }
 }
 
 #[cfg(test,)]
 mod tests {
   use super::*;
-  use crate::{client::{LockClient, aead::Aes256Gcm,}, typenum::consts,};
+  use crate::{
+    typenum::consts,
+    message::Header,
+    client::{LockClient, aead::Aes256Gcm,},
+  };
   use sha1::Sha1;
 
   #[test]
   fn test_open_client() {
-    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
-    let public_key = [1; 32].into();
-    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,>::new(ratchet.clone(), public_key,);
-    let mut open = {
-      let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,>::new(ratchet, public_key,);
-
-      open.sent_count = 1;
-      open.current_keys.insert(0, OpenData::new(&mut open.ratchet,),);
-
-      open
+    let mut ratchet = Ratchet::new(&mut rand::thread_rng(),);
+    let public_key = [1; 32];
+    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> {
+      ratchet: ratchet.clone(),
+      next_header: Header {
+        public_key,
+        ..Header::default()
+      },
+      ..LockClient::default()
+    };
+    let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> {
+      current_public_key: ClearOnDrop::new(public_key.into(),),
+      sent_count: 1,
+      current_keys: vec![(0, OpenData::new(&mut ratchet,),),].into_iter().collect(),
+      ratchet,
+      previous_keys: Default::default(),
     };
     let msg = [1; 20];
     let locked_msg = lock.lock(&mut msg.clone(),)
       .expect("Error locking message");
+    let mut buffer = Vec::new();
     
-    open.open(Message {
-      data: [1; 100].as_ref().into(),
-      ..locked_msg
-    },).expect_err("Opened a corrupted message");
+    open.open(Message { data: [1; 100].as_ref().into(), ..locked_msg }, &mut buffer,)
+      .expect_err("Opened a corrupted message");
 
-    let other_msg = open.open(locked_msg.clone(),)
+    let other_msg = open.open(locked_msg.clone(), &mut buffer,)
       .expect("Error opening message");
 
-    assert_eq!(&other_msg[..], &msg[..], "Opened message corrupted",);
-
-    open.open(locked_msg,).expect_err("Opened a message twice");
+    assert_eq!(other_msg, msg.as_ref(), "Opened message corrupted",);
   }
 }

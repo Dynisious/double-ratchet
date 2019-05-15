@@ -1,7 +1,7 @@
 //! Defines the locking half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-11
+//! Last Moddified --- 2019-05-12
 
 use super::{aead::Algorithm, OpenData,};
 use crate::{
@@ -11,7 +11,6 @@ use crate::{
   typenum::Unsigned,
 };
 use clear_on_drop::ClearOnDrop;
-use x25519_dalek::PublicKey;
 use ring::{aead::{self, SealingKey, Nonce, Aad,},};
 use rand::{RngCore, CryptoRng,};
 use std::marker::PhantomData;
@@ -31,21 +30,6 @@ pub(crate) struct LockClient<Digest, State, Algorithm, Rounds, AadLength,>
 impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
   where A: Algorithm,
     S: ArrayLength<u8>, {
-  /// Creates a new `LockClient` with no history.
-  /// 
-  /// # Params
-  /// 
-  /// ratchet --- The `Ratchet` to use to generate encryption data.  
-  /// public_key --- The current public key being used.  
-  pub fn new(ratchet: Ratchet<D, S, R,>, public_key: PublicKey,) -> Self {
-    let next_header = Header {
-      public_key,
-      message_index: 0,
-      previous_step: 0,
-    };
-    
-    Self { ratchet, next_header, _data: PhantomData, }
-  }
   /// The maxmimum length of a message which can be successfully encrypted.
   #[inline]
   pub const fn max_message_length(&self,) -> usize {
@@ -68,11 +52,11 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
   /// # Params
   /// 
   /// buffer --- The message data to encrypt.  
-  pub fn lock(&mut self, buffer: &mut [u8],) -> Result<Message, LockError> {
+  pub fn lock(&mut self, buffer: &mut [u8],) -> Result<Message, Error> {
     use std::{mem, iter, hint,};
     
     //Check the message length is valid.
-    if buffer.len() > self.max_message_length() { return Err(LockError::MessageLength) };
+    if buffer.len() > self.max_message_length() { return Err(Error::MessageLength) };
 
     //The encryption algorithm.
     let algorithm = A::algorithm();
@@ -103,18 +87,20 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
       //Get the sealing key.
       let sealing_key = match sealing_key.as_ref() {
         Ok(v) => v,
+        //Safe because we got this from OpenData.
         _ => unsafe { hint::unreachable_unchecked() },
       };
       //Get the nonce.
       let nonce = match Nonce::try_assume_unique_for_key(&sealing_data.nonce,) {
         Ok(v) => v,
+        //Safe because we got this value from OpenData.
         _ => unsafe { hint::unreachable_unchecked() }
       };
       //Get the authentication data.
       let aad = Aad::from(&sealing_data.aad,);
       //Seal the message and get the length of the encrypted data.
       let length = aead::seal_in_place(sealing_key, nonce, aad, data.as_mut(), A::TagLength::USIZE,).ok()
-        .ok_or(LockError::Encryption,)?;
+        .ok_or(Error::Encryption,)?;
       //Get the encrypted data.
       let data = data[..length].into();
 
@@ -125,9 +111,29 @@ impl<D, S, A, R, L,> LockClient<D, S, A, R, L,>
   }
 }
 
+impl<D, S, A, R, L,> Default for LockClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>, {
+  #[inline]
+  fn default() -> Self {
+    Self {
+      ratchet: Ratchet::default(),
+      next_header: Header::default(),
+      _data: PhantomData,
+    }
+  }
+}
+
+impl<D, S, A, R, L,> Drop for LockClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>, {
+  #[inline]
+  fn drop(&mut self,) { ClearOnDrop::new(&mut self.next_header,); }
+}
+
 /// An error returned from locking a message.
 #[derive(PartialEq, Eq, Clone, Copy, Debug,)]
-pub enum LockError {
+pub enum Error {
   /// The message was too long to lock.
   MessageLength,
   /// The encryption errored.
@@ -142,15 +148,21 @@ mod tests {
 
   #[test]
   fn test_lock_client() {
-    let ratchet = Ratchet::new(&mut rand::thread_rng(),);
-    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,>::new(ratchet.clone(), [1; 32].into(),);
-    let mut open = {
-      let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,>::new(ratchet, [1; 32].into(),);
-
-      open.current_keys.insert(0, OpenData::new(&mut open.ratchet,),);
-      open.sent_count = 1;
-
-      open
+    let mut ratchet = Ratchet::new(&mut rand::thread_rng(),);
+    let mut lock = LockClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> {
+      ratchet: ratchet.clone(),
+      next_header: Header {
+        public_key: [1; 32].into(),
+        ..Header::default()
+      },
+      _data: PhantomData,
+    };
+    let mut open = OpenClient::<Sha1, consts::U500, Aes256Gcm, consts::U1, consts::U100,> {
+      current_public_key: ClearOnDrop::new([1; 32].into(),),
+      sent_count: 1,
+      current_keys: vec![(0, OpenData::new(&mut ratchet,),),].into_iter().collect(),
+      ratchet,
+      previous_keys: Default::default(),
     };
     let msg_length = (std::usize::MAX - <Aes256Gcm as Algorithm>::TagLength::USIZE)
       / <Aes256Gcm as Algorithm>::BlockSize::USIZE
@@ -161,10 +173,11 @@ mod tests {
     let msg = [1; 20];
     let other = lock.lock(&mut msg.clone(),)
       .expect("Error encrpyting message");
-    let other = open.open(other,)
+    let mut buffer = Vec::new();
+    let other = open.open(other, &mut buffer,)
       .expect("Error decrypting message");
     
     assert_eq!(lock.next_header.message_index, 1, "Sent count failed to update",);
-    assert_eq!(msg.as_ref(), other.as_ref(), "Message does not match",);
+    assert_eq!(msg.as_ref(), other, "Message does not match",);
   }
 }
