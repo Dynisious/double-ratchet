@@ -18,11 +18,10 @@ pub mod aead;
 mod open_data;
 mod lock;
 mod open;
-mod framed;
 mod serde;
 
 use self::{aead::{Algorithm, Aes256Gcm,}, open_data::OpenData, lock::*, open::*,};
-pub use self::framed::*;
+use crate::framed::Framed;
 
 /// The initiating end of a Double-Ratchet comunication.
 /// 
@@ -172,7 +171,7 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
 /// 
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
-struct Client<Digest, State, Algorithm, Rounds, AadLength,>
+pub(crate) struct Client<Digest, State, Algorithm, Rounds, AadLength,>
   where State: ArrayLength<u8>,
     Algorithm: aead::Algorithm,
     AadLength: ArrayLength<u8>, {
@@ -374,7 +373,7 @@ pub enum Error {
   /// # Warning
   /// 
   /// * If an attempt is made to decrypt a message from a previous ratchet step more than
-  /// once it is possible for this error to be returned instead of [NoKey] if the client
+  /// once it is possible for this error to be returned instead of `NoKey` if the client
   /// no longer remembers the public key of the message's header.
   Decryption,
 }

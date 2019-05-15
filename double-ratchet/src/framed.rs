@@ -1,10 +1,13 @@
-//! Defines the [Framed] wrapper.
+//! Defines the `Framed` interface.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-05-15
 
-use super::{aead, Client, Message,};
-use crate::generic_array::ArrayLength;
+use crate::{
+  generic_array::ArrayLength,
+  message::Message,
+  client::{aead, Client,},
+};
 use ratchet::Ratchet;
 use clear_on_drop::ClearOnDrop;
 use rand::{RngCore, CryptoRng,};
@@ -59,7 +62,7 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
   }
   /// Attempts to receive the next message.
   /// 
-  /// This operation will not block.
+  /// If the inner IO object is non blocking this function will not block.
   /// 
   /// # Params
   /// 
@@ -134,9 +137,9 @@ pub enum Error {
   /// There was an error reading/writing to/from the IO.
   Io(io::Error,),
   /// There was an error locking the message.
-  Lock(super::Error,),
+  Lock(crate::client::Error,),
   /// There was an error opening a received message.
-  Open(Message, super::Error,),
+  Open(Message, crate::client::Error,),
   /// There was an error serialising/deserialising a message.
   Serde(serde_cbor::error::Error,),
 }
@@ -151,14 +154,14 @@ impl From<io::ErrorKind> for Error {
   fn from(from: io::ErrorKind,) -> Self { io::Error::from(from,).into() }
 }
 
-impl From<super::Error> for Error {
+impl From<crate::client::Error> for Error {
   #[inline]
-  fn from(from: super::Error,) -> Self { Error::Lock(from,) }
+  fn from(from: crate::client::Error,) -> Self { Error::Lock(from,) }
 }
 
-impl From<(Message, super::Error,)> for Error {
+impl From<(Message, crate::client::Error,)> for Error {
   #[inline]
-  fn from((message, error,): (Message, super::Error,),) -> Self { Error::Open(message, error,) }
+  fn from((message, error,): (Message, crate::client::Error,),) -> Self { Error::Open(message, error,) }
 }
 
 impl From<serde_cbor::error::Error> for Error {

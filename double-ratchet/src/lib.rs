@@ -42,6 +42,7 @@ pub use ratchet::{digest, typenum, generic_array,};
 pub use x25519_dalek;
 
 pub mod message;
-mod client;
+pub mod client;
+pub mod framed;
 
-pub use self::client::*;
+pub use self::client::{LocalClient, RemoteClient,};
