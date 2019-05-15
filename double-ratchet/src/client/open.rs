@@ -1,15 +1,15 @@
 //! Defines the opening half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2019-05-15
 
-use super::{aead::Algorithm, OpenData,};
+use super::{aead::Algorithm, OpenData, Error,};
 use crate::{
-  ratchet::Ratchet,
   message::Message,
   generic_array::{ArrayLength, GenericArray,},
   typenum::consts::U32,
 };
+use ratchet::Ratchet;
 use clear_on_drop::{ClearOnDrop, clear::Clear,};
 use std::collections::HashMap;
 
@@ -44,19 +44,39 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
   /// 
   /// message --- The message to open.  
   /// buffer --- The buffer to append the decrypted message too.  
-  /// 
-  /// # Warning
-  /// 
-  /// Only call this function after ensuring that `OpenData` exists for the message.
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
     use ring::aead::{self, OpeningKey, Nonce, Aad,};
-    use std::hint;
+    use std::{hint, collections::hash_map::Entry,};
     
     clear_on_drop::clear_stack_on_return_fnonce(1, move || {
-      //The data to open this message.
-      let open_data = match self.current_keys.remove(&message.header.message_index,) {
-        Some(v) => v,
-        None => return Err(message),
+      //The message is part of the current step.
+      let open_data = if self.current_public_key.as_ref() == message.header.public_key.as_ref() {
+        //Get the opening data for the message from the current step.
+        match self.current_keys.remove(&message.header.message_index,) {
+          Some(v) => v,
+          None => return Err((message, Error::NoKey,)),
+        }
+      //The message must be part of a previous step.
+      } else {
+        match self.previous_keys.entry(ClearOnDrop::new(message.header.public_key.into(),),) {
+          //There are previous keys for this public key.
+          Entry::Occupied(mut entry) => {
+            let keys = entry.get_mut();
+            //Remove the key.
+            let open_data = match keys.remove(&message.header.message_index,) {
+              Some(v) => v,
+              //There is no key.
+              None => return Err((message, Error::NoKey,)),
+            };
+
+            //Clear the entry once there are no more keys.
+            if keys.is_empty() { entry.remove(); }
+
+            open_data
+          },
+          //There are no keys for this public key.
+          Entry::Vacant(_) => return Err((message, Error::NoKey,)),
+        }
       };
       let key = match OpeningKey::new(A::algorithm(), &open_data.key,) {
         Ok(v) => v,
@@ -69,10 +89,11 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
         _ => unsafe { hint::unreachable_unchecked() },
       };
       let aad = Aad::from(open_data.aad.as_ref(),);
-      //The original length of the buffer.
+      //The original length of the buffer before the message data is appended.
       let buffer_len = buffer.len();
       //The message data to open.
       let data = {
+        //The decryption is done in place so we copy the data into the buffer for decryption.
         buffer.extend(message.data.iter().copied(),);
 
         &mut buffer[buffer_len..]
@@ -85,7 +106,7 @@ impl<D, S, A, R, L,> OpenClient<D, S, A, R, L,>
           //Store the key for a later attempt.
           self.current_keys.insert(message.header.message_index, open_data,); 
         
-          message
+          (message, Error::Decryption,)
         },)?;
       //The length of buffer which is used.
       let len = buffer_len + data_len;

@@ -1,9 +1,9 @@
 //! Defines the locking half of a [Client].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2019-05-15
 
-use super::{aead::Algorithm, OpenData,};
+use super::{aead::Algorithm, OpenData, Error,};
 use crate::{
   ratchet::Ratchet,
   message::{Message, Header,},
@@ -129,15 +129,6 @@ impl<D, S, A, R, L,> Drop for LockClient<D, S, A, R, L,>
   where S: ArrayLength<u8>, {
   #[inline]
   fn drop(&mut self,) { ClearOnDrop::new(&mut self.next_header,); }
-}
-
-/// An error returned from locking a message.
-#[derive(PartialEq, Eq, Clone, Copy, Debug,)]
-pub enum Error {
-  /// The message was too long to lock.
-  MessageLength,
-  /// The encryption errored.
-  Encryption,
 }
 
 #[cfg(test,)]

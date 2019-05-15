@@ -3,7 +3,11 @@
 //! # Example
 //! 
 //! ```rust
-//! use double_ratchet::{LocalClient, RemoteClient, StaticSecret, typenum::consts::U200,};
+//! use double_ratchet::{
+//!   LocalClient, RemoteClient,
+//!   x25519_dalek::StaticSecret,
+//!   typenum::consts::U200,
+//! };
 //! use sha1::Sha1;
 //! 
 //! let private1: StaticSecret = [1; 32].into();
@@ -25,7 +29,7 @@
 //! ```
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2019-05-15
 
 #![deny(missing_docs,)]
 #![feature(const_fn, maybe_uninit, maybe_uninit_ref, bind_by_move_pattern_guards,)]
@@ -35,7 +39,7 @@ extern crate serde_derive;
 
 pub use ratchet;
 pub use ratchet::{digest, typenum, generic_array,};
-pub use x25519_dalek::{PublicKey, StaticSecret,};
+pub use x25519_dalek;
 
 pub mod message;
 mod client;

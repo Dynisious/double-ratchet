@@ -1,7 +1,7 @@
 //! Defines the double ratchet clients [LocalClient] and [RemoteClient].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2019-05-15
 
 use crate::{
   ratchet::Ratchet,
@@ -22,7 +22,7 @@ mod framed;
 mod serde;
 
 use self::{aead::{Algorithm, Aes256Gcm,}, open_data::OpenData, lock::*, open::*,};
-pub use self::{lock::Error, framed::*,};
+pub use self::framed::*;
 
 /// The initiating end of a Double-Ratchet comunication.
 /// 
@@ -70,7 +70,7 @@ impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
   /// message --- The Message to decrypt.  
   /// buffer --- The buffer to write the decrypted message too.  
   #[inline]
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
     self.0.open(message, buffer, true,)
   }
   /// Encrypts the passed message.
@@ -142,7 +142,7 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
   /// message --- The Message to decrypt.  
   /// buffer --- The buffer to write the decrypted message too.  
   #[inline]
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Message> {
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
     self.0.open(message, buffer, false,)
   }
   /// Encrypts the passed message.
@@ -198,42 +198,26 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   /// message --- The Message to decrypt.  
   /// buffer --- The buffer to write the decrypted message too.  
   /// local --- Indicates whether this Client is the initiator of the communication for ratchet steps.  
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>, local: bool,) -> Result<&'a mut [u8], Message> {
+  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>, local: bool,) -> Result<&'a mut [u8], (Message, Error,)> {
     use std::{mem, hint,};
 
     //Remember the ratchet state.
     let mut ratchet = self.open.ratchet.clone();
-    let mut sent_count = 0;
-    let mut sent_count = ClearOnDrop::new(&mut sent_count,);
+    let mut sent_count = self.open.sent_count;
+    let sent_count = ClearOnDrop::new(&mut sent_count,);
+    //Check if the message is part of the current ratchet step.
+    let current_step = self.open.current_public_key.as_ref() == message.header.public_key.as_ref();
+    //Check if the message is part of a new ratchet step.
+    let new_step = !current_step
+      //Check if it is part of a previous step.
+      && self.open.previous_keys.keys().all(|key,| key.as_ref() != message.header.public_key.as_ref(),);
     //Ensure that a result is created.
     let res;
 
-    //If the message is part of the current step open it.
-    if self.open.current_public_key.as_ref() == message.header.public_key.as_ref() {
-      //Update the sent count.
-      *sent_count = mem::replace(&mut self.open.sent_count, message.header.message_index + 1,);
-
-      //Generate any skipped keys.
-      if *sent_count <= message.header.message_index {
-        //Generate the skipped keys.
-        for index in *sent_count..self.open.sent_count {
-          self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
-        }
-      }
-
-      res = self.open.open(message, buffer,);
-
-      //Rollback if there was an error.
-      if res.is_err() {
-        //Delete the generated keys.
-        for index in *sent_count..self.open.sent_count {
-          self.open.current_keys.remove(&index,);
-        }
-      }
     //If the message is part of the next step advance the step.
-    } else {
+    if new_step {
       //Update the sent count.
-      *sent_count = mem::replace(&mut self.open.sent_count, 0,);
+      self.open.sent_count = 0;
 
       //Update the current public key.
       let current_public_key = self.open.current_public_key.clone();
@@ -314,6 +298,31 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
         //Rollback the current public key.
         self.open.current_public_key = current_public_key;
       }
+    //The message is part of an existing ratchet step.
+    } else {
+      //If the message is part of the current step make sure we have generated the key for it.
+      if current_step {
+        //Update the sent count.
+        self.open.sent_count = message.header.message_index + 1;
+
+        //Generate any skipped keys.
+        if *sent_count <= message.header.message_index {
+          //Generate the skipped keys.
+          for index in *sent_count..self.open.sent_count {
+            self.open.current_keys.insert(index, OpenData::new(&mut self.open.ratchet,),);
+          }
+        }
+      }
+
+      res = self.open.open(message, buffer,);
+
+      //Rollback if there was an error.
+      if res.is_err() {
+        //Delete the generated keys.
+        for index in *sent_count..self.open.sent_count {
+          self.open.current_keys.remove(&index,);
+        }
+      }
     }
 
     if res.is_err() {
@@ -351,6 +360,25 @@ impl<D, S, A, R, L,> Default for Client<D, S, A, R, L,>
   }
 }
 
+/// An error returned from locking a message.
+#[derive(PartialEq, Eq, Clone, Copy, Debug,)]
+pub enum Error {
+  /// The message was too long to lock.
+  MessageLength,
+  /// The encryption errored.
+  Encryption,
+  /// There was no key to open a message.
+  NoKey,
+  /// The decryption errored.
+  /// 
+  /// # Warning
+  /// 
+  /// * If an attempt is made to decrypt a message from a previous ratchet step more than
+  /// once it is possible for this error to be returned instead of [NoKey] if the client
+  /// no longer remembers the public key of the message's header.
+  Decryption,
+}
+
 #[cfg(test,)]
 mod tests {
   use super::*;
@@ -362,8 +390,8 @@ mod tests {
 
     let open_sec = StaticSecret::from([1; 32],);
     let lock_sec = StaticSecret::from([2; 32],);
-    let mut lock = LocalClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1,>::connect(&(&open_sec).into(), &lock_sec,);
-    let mut open = RemoteClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1,>::accept(&(&lock_sec).into(), &open_sec,);
+    let mut lock = LocalClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1, consts::U10,>::connect(&(&open_sec).into(), &lock_sec,);
+    let mut open = RemoteClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1, consts::U10,>::accept(&(&lock_sec).into(), &open_sec,);
     let msg = std::iter::successors(Some(1), |&i,| Some(i + 1),)
       .take(100,)
       .collect::<Box<[u8]>>();
@@ -372,13 +400,11 @@ mod tests {
     let mut buffer = msg.iter().copied().collect::<Vec<_>>();
     let message = lock.lock(&mut buffer,)
       .expect("Error locking first message");
-    
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
     //Test receiving.
     buffer.clear();
     open.open(message, &mut buffer,).expect("Error opening first message");
-    
     assert_eq!(buffer, msg.as_ref(), "First received message corrupted",);
     
     //Test sending other way.
@@ -386,19 +412,40 @@ mod tests {
     buffer.clear();
     buffer.extend(msg.iter().copied(),);
     let message = open.lock(&mut buffer,).expect("Error locking second message");
-    
     assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
 
+    //Test receiving other way.
+    buffer.clear();
+    let buffer = lock.open(message.clone(), &mut buffer,)
+      .expect("Error opening second message");
+    assert_eq!(buffer, msg.as_ref(), "Second received message corrupted",);
+
+    lock.open(message, &mut Vec::new(),).expect_err("Opened a message twice");
+  }
+  #[test]
+  fn test_client_recovery() {
+    let open_sec = StaticSecret::from([1; 32],);
+    let lock_sec = StaticSecret::from([2; 32],);
+    let mut lock = LocalClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1, consts::U10,>::connect(&(&open_sec).into(), &lock_sec,);
+    let mut open = RemoteClient::<Sha1, consts::U64, aead::Aes256Gcm, consts::U1, consts::U10,>::accept(&(&lock_sec).into(), &open_sec,);
+    let msg = std::iter::successors(Some(1), |&i,| Some(i + 1),)
+      .take(100,)
+      .collect::<Box<[u8]>>();
+    
+    //Test sending.
+    let mut buffer = msg.iter().copied().collect::<Vec<_>>();
+    let message = lock.lock(&mut buffer,)
+      .expect("Error locking message");
+    assert!(buffer.iter().all(|&i,| i == 0,), "Error clearing buffer",);
+    
     //Test corrupted message.
     buffer.clear();
     lock.open(Message { data: Box::new([1; 100]), ..message }, &mut buffer,)
       .expect_err("Opened corrupted message");
-    
+
     //Test corrupted recovery.
     buffer.clear();
-    let buffer = lock.open(message, &mut buffer,)
-      .expect("Error opening second message");
-    
-    assert_eq!(buffer, msg.as_ref(), "Second received message corrupted",);
+    open.open(message, &mut buffer,).expect("Error opening message");
+    assert_eq!(buffer, msg.as_ref(), "Received message corrupted",);
   }
 }

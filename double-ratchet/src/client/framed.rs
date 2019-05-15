@@ -1,10 +1,12 @@
 //! Defines the [Framed] wrapper.
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2019-05-15
 
-use super::*;
+use super::{aead, Client, Message,};
 use crate::generic_array::ArrayLength;
+use ratchet::Ratchet;
+use clear_on_drop::ClearOnDrop;
 use rand::{RngCore, CryptoRng,};
 use std::{io::{self, Read, Write,}, task::Poll,};
 
@@ -132,9 +134,9 @@ pub enum Error {
   /// There was an error reading/writing to/from the IO.
   Io(io::Error,),
   /// There was an error locking the message.
-  Lock(lock::Error,),
+  Lock(super::Error,),
   /// There was an error opening a received message.
-  Open(Message,),
+  Open(Message, super::Error,),
   /// There was an error serialising/deserialising a message.
   Serde(serde_cbor::error::Error,),
 }
@@ -149,14 +151,14 @@ impl From<io::ErrorKind> for Error {
   fn from(from: io::ErrorKind,) -> Self { io::Error::from(from,).into() }
 }
 
-impl From<lock::Error> for Error {
+impl From<super::Error> for Error {
   #[inline]
-  fn from(from: lock::Error,) -> Self { Error::Lock(from,) }
+  fn from(from: super::Error,) -> Self { Error::Lock(from,) }
 }
 
-impl From<Message> for Error {
+impl From<(Message, super::Error,)> for Error {
   #[inline]
-  fn from(from: Message,) -> Self { Error::Open(from,) }
+  fn from((message, error,): (Message, super::Error,),) -> Self { Error::Open(message, error,) }
 }
 
 impl From<serde_cbor::error::Error> for Error {
@@ -167,7 +169,12 @@ impl From<serde_cbor::error::Error> for Error {
 #[cfg(test,)]
 mod tests {
   use super::*;
+  use crate::{
+    typenum::consts,
+    client::{LocalClient, RemoteClient, aead::Aes256Gcm,},
+  };
   use sha1::Sha1;
+  use x25519_dalek::StaticSecret;
   use std::net::{TcpListener, TcpStream,};
 
   #[test]
@@ -185,8 +192,8 @@ mod tests {
       .expect("Error setting timeout on sock2");
     let local_sec = StaticSecret::from([1; 32],);
     let remote_sec = StaticSecret::from([2; 32],);
-    let local = LocalClient::<Sha1, consts::U64, Aes256Gcm, consts::U1, consts::U0,>::connect(&(&remote_sec).into(), &local_sec,);
-    let mut remote = RemoteClient::<Sha1, consts::U64, Aes256Gcm, consts::U1, consts::U0,>::accept(&(&local_sec).into(), &remote_sec,);
+    let local = LocalClient::<Sha1, consts::U64, Aes256Gcm, consts::U1, consts::U10,>::connect(&(&remote_sec).into(), &local_sec,);
+    let mut remote = RemoteClient::<Sha1, consts::U64, Aes256Gcm, consts::U1, consts::U10,>::accept(&(&local_sec).into(), &remote_sec,);
     let mut local = local.framed(sock1,);
     
     //First Message.
