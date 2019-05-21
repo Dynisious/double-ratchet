@@ -4,7 +4,7 @@
 //! 
 //! ```rust
 //! use double_ratchet::{
-//!   LocalClient, RemoteClient,
+//!   Client, LocalClient, RemoteClient,
 //!   x25519_dalek::StaticSecret,
 //!   typenum::consts::U200,
 //! };
@@ -29,10 +29,10 @@
 //! ```
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-15
+//! Last Moddified --- 2019-05-21
 
 #![deny(missing_docs,)]
-#![feature(const_fn, maybe_uninit, maybe_uninit_ref, bind_by_move_pattern_guards,)]
+#![feature(const_fn, maybe_uninit, maybe_uninit_ref, bind_by_move_pattern_guards, const_vec_new,)]
 
 #[macro_use]
 extern crate serde_derive;
@@ -45,4 +45,4 @@ pub mod message;
 pub mod client;
 pub mod framed;
 
-pub use self::client::{LocalClient, RemoteClient,};
+pub use self::client::{Client, LocalClient, RemoteClient,};

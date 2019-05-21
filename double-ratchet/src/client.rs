@@ -1,7 +1,7 @@
 //! Defines the double ratchet clients [LocalClient] and [RemoteClient].
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-15
+//! Last Moddified --- 2019-05-21
 
 use crate::{
   ratchet::Ratchet,
@@ -12,7 +12,7 @@ use crate::{
 use clear_on_drop::ClearOnDrop;
 use rand::{RngCore, CryptoRng,};
 use x25519_dalek::{PublicKey, StaticSecret,};
-use std::{collections::HashMap, io::{Read, Write,},};
+use std::collections::HashMap;
 
 pub mod aead;
 mod open_data;
@@ -28,7 +28,7 @@ use crate::framed::Framed;
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
 #[derive(Serialize, Deserialize,)]
-pub struct LocalClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<Client<Digest, State, Algorithm, Rounds, AadLength,>>,)
+pub struct LocalClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<InnerClient<Digest, State, Algorithm, Rounds, AadLength,>>,)
   where State: 'static + ArrayLength<u8>,
     Algorithm: aead::Algorithm,
     AadLength: 'static + ArrayLength<u8>;
@@ -47,7 +47,7 @@ impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
   /// remote --- The public key of the remote Client.  
   /// private_key --- The private key to connect using.  
   pub fn connect(remote: &PublicKey, private_key: &StaticSecret,) -> Self {
-    let mut client = Box::<Client<D, S, A, R, L,>>::default();
+    let mut client = Box::<InnerClient<D, S, A, R, L,>>::default();
     let mut ratchet = Ratchet::from(private_key.diffie_hellman(remote,).as_bytes().clone().as_mut(),);
 
     client.private_key.copy_from_slice(&StaticSecret::new(&mut rand::thread_rng(),).to_bytes().as_ref(),);
@@ -60,38 +60,29 @@ impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
 
     LocalClient(client,)
   }
-  /// Receives a message from the connected Client.
-  /// 
-  /// If the message is decrypted successfully the message data is appended to `buffer`.
-  /// 
-  /// # Params
-  /// 
-  /// message --- The Message to decrypt.  
-  /// buffer --- The buffer to write the decrypted message too.  
-  #[inline]
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
-    self.0.open(message, buffer, true,)
-  }
-  /// Encrypts the passed message.
-  /// 
-  /// The buffer will be cleared if the message is encrypted successfully.
-  /// 
-  /// # Params
-  /// 
-  /// message --- The Message to encrypt.  
-  #[inline]
-  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
-    self.0.lock(message,)
-  }
   /// Returns a [Framed] around this `Client`.
   /// 
   /// # Params
   /// 
-  /// io --- The Write/Read to send/receive messages from.  
+  /// io --- The `IO` object to read and/or write messages to/from.  
   #[inline]
-  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,>
-    where Io: Read + Write, {
+  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,> {
     Framed::new(io, self.0, true,)
+  }
+}
+
+impl<D, S, A, R, L,> Client for LocalClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  #[inline]
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
+    self.0.open(message, buffer, true,)
+  }
+  #[inline]
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    self.0.lock(message,)
   }
 }
 
@@ -100,7 +91,7 @@ impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
 #[derive(Serialize, Deserialize,)]
-pub struct RemoteClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<Client<Digest, State, Algorithm, Rounds, AadLength,>>,)
+pub struct RemoteClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<InnerClient<Digest, State, Algorithm, Rounds, AadLength,>>,)
   where State: 'static + ArrayLength<u8>,
     Algorithm: aead::Algorithm,
     AadLength: 'static + ArrayLength<u8>;
@@ -119,7 +110,7 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
   /// remote --- The public key of the remote Client.  
   /// private_key --- The private key to connect using.  
   pub fn accept(remote: &PublicKey, private_key: &StaticSecret,) -> Self {
-    let mut client = Box::<Client<D, S, A, R, L,>>::default();
+    let mut client = Box::<InnerClient<D, S, A, R, L,>>::default();
     let mut ratchet = Ratchet::from(private_key.diffie_hellman(remote,).as_bytes().clone().as_mut(),);
 
     client.private_key.copy_from_slice(StaticSecret::new(&mut rand::thread_rng(),).to_bytes().as_ref(),);
@@ -132,38 +123,29 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
 
     RemoteClient(client,)
   }
-  /// Receives a message from the connected Client.
-  /// 
-  /// If the message is decrypted successfully the message data is appended to `buffer`.
-  /// 
-  /// # Params
-  /// 
-  /// message --- The Message to decrypt.  
-  /// buffer --- The buffer to write the decrypted message too.  
-  #[inline]
-  pub fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
-    self.0.open(message, buffer, false,)
-  }
-  /// Encrypts the passed message.
-  /// 
-  /// The buffer will be cleared if the message is encrypted successfully.
-  /// 
-  /// # Params
-  /// 
-  /// message --- The Message to encrypt.  
-  #[inline]
-  pub fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
-    self.0.lock(message,)
-  }
   /// Returns a [Framed] around this `Client`.
   /// 
   /// # Params
   /// 
-  /// io --- The Write/Read to send/receive messages from.  
+  /// io --- The `IO` object to read and/or write messages to/from.  
   #[inline]
-  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,>
-    where Io: Read + Write, {
-    Framed::new(io, self.0, false,)
+  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,> {
+    Framed::new(io, self.0, true,)
+  }
+}
+
+impl<D, S, A, R, L,> Client for RemoteClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  #[inline]
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
+    self.0.open(message, buffer, false,)
+  }
+  #[inline]
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    self.0.lock(message,)
   }
 }
 
@@ -171,7 +153,7 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
 /// 
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
-pub(crate) struct Client<Digest, State, Algorithm, Rounds, AadLength,>
+pub(crate) struct InnerClient<Digest, State, Algorithm, Rounds, AadLength,>
   where State: ArrayLength<u8>,
     Algorithm: aead::Algorithm,
     AadLength: ArrayLength<u8>, {
@@ -183,7 +165,7 @@ pub(crate) struct Client<Digest, State, Algorithm, Rounds, AadLength,>
   private_key: ClearOnDrop<GenericArray<u8, U32>>,
 }
 
-impl<D, S, A, R, L,> Client<D, S, A, R, L,>
+impl<D, S, A, R, L,> InnerClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>,
@@ -345,7 +327,7 @@ impl<D, S, A, R, L,> Client<D, S, A, R, L,>
   }
 }
 
-impl<D, S, A, R, L,> Default for Client<D, S, A, R, L,>
+impl<D, S, A, R, L,> Default for InnerClient<D, S, A, R, L,>
   where S: ArrayLength<u8>,
     A: Algorithm,
     L: ArrayLength<u8>, {
@@ -356,6 +338,51 @@ impl<D, S, A, R, L,> Default for Client<D, S, A, R, L,>
       open: OpenClient::default(),
       private_key: ClearOnDrop::new(GenericArray::default(),),
     }
+  }
+}
+
+/// Defines functionality of a Double-Ratchet `Client`.
+pub trait Client {
+  /// Receives a message from the connected `Client`.
+  /// 
+  /// If the message is decrypted successfully the message data is appended to `buffer`.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to decrypt.  
+  /// buffer --- The buffer to write the decrypted message too.  
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)>;
+  /// Encrypts the passed message.
+  /// 
+  /// The buffer will be cleared if the message is encrypted successfully.
+  /// 
+  /// # Params
+  /// 
+  /// message --- The Message to encrypt.  
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error>;
+}
+
+impl<'t, T,> Client for &'t mut T
+  where T: Client {
+  #[inline]
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
+    T::open(self, message, buffer,)
+  }
+  #[inline]
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    T::lock(self, message,)
+  }
+}
+
+impl<T,> Client for Box<T>
+  where T: Client {
+  #[inline]
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
+    T::open(self, message, buffer,)
+  }
+  #[inline]
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    T::lock(self, message,)
   }
 }
 
