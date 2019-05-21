@@ -1,0 +1,13 @@
+
+[package]
+name = "drft"
+version = "0.1.0"
+authors = ["Dynisious <daniel.bechaz@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.33"
+
+[dependencies.double-ratchet]
+version = "0.4.0"
+git = "https://github.com/Dynisious/double-ratchet/"

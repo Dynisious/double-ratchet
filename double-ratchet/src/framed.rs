@@ -3,15 +3,23 @@
 //! Author -- daniel.bechaz@gmail.com  
 //! Last Moddified --- 2019-05-21
 
-use crate::{
-  generic_array::ArrayLength,
-  message::Message,
-  client::{self, aead, Client, InnerClient,},
-};
-use ratchet::Ratchet;
+use crate::{message::Message, client::{self, Client,},};
 use clear_on_drop::ClearOnDrop;
-use rand::{RngCore, CryptoRng,};
 use std::{io::{self, Read, Write,}, task::Poll,};
+
+/// Removes `len` bytes from the front of buffer clearing the unused tail bytes.
+fn consume_from_front(buffer: &mut Vec<u8>, len: usize,) {
+  let tail = buffer.len().saturating_sub(len,);
+  let range = 0..tail;
+
+  for (a, b,) in range.zip(len..buffer.len(),) {
+    buffer[a] = buffer[b];
+  }
+
+  ClearOnDrop::new(&mut buffer[tail..],);
+
+  buffer.truncate(tail,);
+}
 
 /// Receives a single message from the start of an input buffer which contains one or
 /// more encoded messages.
@@ -24,13 +32,18 @@ use std::{io::{self, Read, Write,}, task::Poll,};
 /// client --- The `Client` to open the message with.  
 /// input --- The input buffer to receive a message from.  
 /// buffer --- The output buffer to write the received message data out too.  
-pub fn receive_one<'a,>(client: &mut dyn Client, input: &mut Vec<u8>, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Error> {
+pub fn receive_one<'a,>(mut client: impl Client, input: &mut Vec<u8>, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], Error> {
   use serde_cbor::de;
 
   //Deserialise a message.
   let message = match de::from_slice(input,) {
     //Consume the used bytes.
-    Ok(v) => { input.clear(); v },
+    Ok(v) => {
+      ClearOnDrop::new(input.as_mut_slice(),);
+      input.clear();
+      
+      v
+    },
     //Maybe too much data in the buffer, deserialise a subslice.
     Err(e) if e.is_syntax() && e.offset() > 0 => {
       //The range to reattempt on.
@@ -38,7 +51,7 @@ pub fn receive_one<'a,>(client: &mut dyn Client, input: &mut Vec<u8>, buffer: &'
 
       match de::from_slice(&input[range],) {
         //The subslice was an exact message.
-        Ok(v) => { input.drain(range,); v },
+        Ok(v) => { consume_from_front(input, range.end,); v },
         //Return the original error.
         Err(_) => { return Err(Error::Deserialise(e,)) },
       }
@@ -51,20 +64,17 @@ pub fn receive_one<'a,>(client: &mut dyn Client, input: &mut Vec<u8>, buffer: &'
 }
 
 /// Wraps a `Client` and a Stream/Sink to parse messages to/from.
-pub struct Framed<Io, Digest, State, Algorithm, Rounds, AadLength,>
-  where State: ArrayLength<u8>,
-    Algorithm: aead::Algorithm,
-    AadLength: ArrayLength<u8>, {
+/// 
+/// It implements `Read`/`Write` by forwarding too the internal `IO` instance however
+/// `read` will read out of the internal buffer first.
+pub struct Framed<Io, Client,> {
   io: Io,
-  client: (bool, Box<InnerClient<Digest, State, Algorithm, Rounds, AadLength,>>,),
+  client: Client,
   /// The internal buffer of unparsed data.
   buffer: Vec<u8>,
 }
 
-impl<Io, D, S, A, R, L,> Framed<Io, D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>, {
+impl<Io, Client,> Framed<Io, Client,> {
   /// Construct a new `Framed` from parts.
   /// 
   /// # Params
@@ -73,22 +83,14 @@ impl<Io, D, S, A, R, L,> Framed<Io, D, S, A, R, L,>
   /// client --- The [Client] to use to lock/open messages.  
   /// bool --- An indicator of it the Client is the initiating side.  
   #[inline]
-  pub(super) const fn new(io: Io, client: Box<InnerClient<D, S, A, R, L,>>, local: bool,) -> Self {
-    Self { io, client: (local, client,), buffer: Vec::new(), }
+  pub(super) const fn new(io: Io, client: Client,) -> Self {
+    Self { io, client, buffer: Vec::new(), }
   }
 }
 
-impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
+impl<I, C,> Framed<I, C,>
   where I: Write,
-    S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: RngCore + CryptoRng, {
-  /// Gets a reference to the internal `IO` value as a `Write` instance.
-  /// 
-  /// This function exists
-  #[inline]
-  pub fn write(&mut self,) -> &mut dyn Write { &mut self.io }
+    C: Client, {
   /// Attempts to send the passed message.
   /// 
   /// # Params
@@ -103,12 +105,43 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
   }
 }
 
-impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
+impl<I, C,> Framed<I, C,>
+  where I: Read, {
+  /// Reads as much data as possible into the buffer.
+  /// 
+  /// Will return on `EOF` or `WouldBlock`.
+  /// 
+  /// A value of `Ok(true)` indicates `EOF` was reached.
+  fn fill_buf(&mut self,) -> io::Result<bool> {
+    use std::io::ErrorKind;
+
+    //The buffer to store read data.
+    let mut buf = [0; 100];
+    let mut buf = ClearOnDrop::new(buf.as_mut(),);
+
+    //Read in data.
+    while self.buffer.len() <= std::usize::MAX - 100 {
+      //Read new data.
+      let len = match self.io.read(buf.as_mut(),) {
+        //Reached EOF.
+        Ok(0) => return Ok(true),
+        Ok(v) => v,
+        //If there is no data and we are non blocking stop waiting.
+        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+        Err(e) => return Err(e),
+      };
+
+      //Add the data to the buffer.
+      self.buffer.extend(&buf[..len],);
+    }
+
+    Ok(false)
+  }
+}
+
+impl<I, C,> Framed<I, C,>
   where I: Read,
-    S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+    C: Client, {
   /// Attempts to receive the next message.
   /// 
   /// If the inner IO object is non blocking this function will not block.
@@ -129,34 +162,18 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
       Err(Error::Deserialise(e,)) if e.is_eof() => {
         //Remember the current length to 
         let len = self.buffer.len();
-        let mut would_block = false;
-        //The buffer to store read data.
-        let mut buf = [0; 100];
-        //Read in data.
-        while self.buffer.len() <= std::usize::MAX - 100 {
-          //Read new data.
-          let len = match self.io.read(&mut buf,) {
-            Ok(v) => v,
-            //If there is no data and we are non blocking stop waiting.
-            Err(e) if e.kind() == ErrorKind::WouldBlock => { would_block = true; break },
-            Err(e) => return Err(Error::Recv(e,)),
-          };
-          
-          //No more data was available.
-          if len == 0 { break }
-          
-          //Add the data to the buffer.
-          self.buffer.extend(&buf[..len],);
-        }
+        //Read new data.
+        let eof = self.fill_buf().map_err(|e,| Error::Recv(e,),)?;
 
         //No new data could be read we wont be able to get a new message.
         if len == self.buffer.len() {
-          //If no data was read because we are not blocking return pending.
-          return if would_block { Ok(Poll::Pending) }
-            //If we are at EOF with no extra data return finished.
-            else if self.buffer.is_empty() { Ok(Poll::Ready(None)) }
-            //If we are at EOF with unused data return error.
-            else { Err(Error::Recv(ErrorKind::UnexpectedEof.into(),)) }
+          return if eof {
+              //If we are at EOF return done.
+              if self.buffer.is_empty() { Ok(Poll::Ready(None)) }
+              //If we are at EOF with unused data return error.
+              else { Err(Error::Recv(ErrorKind::UnexpectedEof.into(),)) }
+            //If no data was read because we are not blocking return pending.
+            } else { Ok(Poll::Pending) }
         }
 
         //New data was read; recursively receive a message.
@@ -168,12 +185,9 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
   }
 }
 
-impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
+impl<I, C,> Framed<I, C,>
   where I: Read + Write,
-    S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+    C: Client, {
   /// Run a function on every message received from the `Framed` and optionally send a response.
   /// 
   /// If any error is encounterd it is returned.
@@ -198,6 +212,7 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
           if let Some(msg) = process(msg,) { self.send(msg,)?; }
 
           //Clear the buffer for the next message.
+          ClearOnDrop::new(buffer.as_mut_slice(),);
           buffer.clear();
         },
         //If there are no more messages exit.
@@ -207,35 +222,35 @@ impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
   }
 }
 
-impl<I, D, S, A, R, L,> Framed<I, D, S, A, R, L,>
-  where I: Read + Write,
-    S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+impl<I, C,> Write for Framed<I, C,>
+  where I: Write, {
+  #[inline]
+  fn write(&mut self, bytes: &[u8],) -> io::Result<usize> { self.io.write(bytes,) }
+  #[inline]
+  fn flush(&mut self,) -> io::Result<()> { self.io.flush() }
 }
 
-impl<I, D, S, A, R, L,> Drop for Framed<I, D, S, A, R, L,>
-  where S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>, {
+impl<I, C,> Read for Framed<I, C,>
+  where I: Read, {
+  fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+    let len = usize::min(self.buffer.len(), bytes.len(),);
+
+    //Move bytes out of the internal buffer first.
+    for (a, b,) in bytes.iter_mut().zip(self.buffer[..len].iter().copied(),) {
+      *a = b;
+    }
+
+    //Clear the used bytes.
+    consume_from_front(&mut self.buffer, len,);
+
+    //Read any remaining bytes.
+    self.io.read(&mut bytes[len..],).map(|read,| read + len,)
+  }
+}
+
+impl<I, C,> Drop for Framed<I, C,> {
   #[inline]
   fn drop(&mut self,) { ClearOnDrop::new(&mut self.buffer,); }
-}
-
-impl<D, S, A, R, L,> Client for (bool, Box<InnerClient<D, S, A, R, L,>>,)
-  where S: ArrayLength<u8>,
-    A: aead::Algorithm,
-    L: ArrayLength<u8>,
-    Ratchet<D, S, R,>: RngCore + CryptoRng, {
-  #[inline]
-  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, client::Error,)> {
-    self.1.open(message, buffer, self.0,)
-  }
-  #[inline]
-  fn lock(&mut self, message: &mut [u8],) -> Result<Message, client::Error> {
-    self.1.lock(message,)
-  }
 }
 
 /// An error from a [Framed] instance.

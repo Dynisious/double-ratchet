@@ -60,15 +60,6 @@ impl<D, S, A, R, L,> LocalClient<D, S, A, R, L,>
 
     LocalClient(client,)
   }
-  /// Returns a [Framed] around this `Client`.
-  /// 
-  /// # Params
-  /// 
-  /// io --- The `IO` object to read and/or write messages to/from.  
-  #[inline]
-  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,> {
-    Framed::new(io, self.0, true,)
-  }
 }
 
 impl<D, S, A, R, L,> Client for LocalClient<D, S, A, R, L,>
@@ -122,15 +113,6 @@ impl<D, S, A, R, L,> RemoteClient<D, S, A, R, L,>
     client.lock.next_header.public_key.copy_from_slice(PublicKey::from(private_key,).as_bytes().as_ref(),);
 
     RemoteClient(client,)
-  }
-  /// Returns a [Framed] around this `Client`.
-  /// 
-  /// # Params
-  /// 
-  /// io --- The `IO` object to read and/or write messages to/from.  
-  #[inline]
-  pub fn framed<Io,>(self, io: Io,) -> Framed<Io, D, S, A, R, L,> {
-    Framed::new(io, self.0, true,)
   }
 }
 
@@ -342,7 +324,7 @@ impl<D, S, A, R, L,> Default for InnerClient<D, S, A, R, L,>
 }
 
 /// Defines functionality of a Double-Ratchet `Client`.
-pub trait Client {
+pub trait Client: Sized {
   /// Receives a message from the connected `Client`.
   /// 
   /// If the message is decrypted successfully the message data is appended to `buffer`.
@@ -360,6 +342,13 @@ pub trait Client {
   /// 
   /// message --- The Message to encrypt.  
   fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error>;
+  /// Returns a [Framed] around this `Client`.
+  /// 
+  /// # Params
+  /// 
+  /// io --- The `IO` object to read and/or write messages to/from.  
+  #[inline]
+  fn framed<Io,>(self, io: Io,) -> Framed<Io, Self,> { Framed::new(io, self,) }
 }
 
 impl<'t, T,> Client for &'t mut T
@@ -383,6 +372,21 @@ impl<T,> Client for Box<T>
   #[inline]
   fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
     T::lock(self, message,)
+  }
+}
+
+impl<D, S, A, R, L,> Client for (bool, Box<InnerClient<D, S, A, R, L,>>,)
+  where S: ArrayLength<u8>,
+    A: aead::Algorithm,
+    L: ArrayLength<u8>,
+    Ratchet<D, S, R,>: RngCore + CryptoRng, {
+  #[inline]
+  fn open<'a,>(&mut self, message: Message, buffer: &'a mut Vec<u8>,) -> Result<&'a mut [u8], (Message, Error,)> {
+    self.1.open(message, buffer, self.0,)
+  }
+  #[inline]
+  fn lock(&mut self, message: &mut [u8],) -> Result<Message, Error> {
+    self.1.lock(message,)
   }
 }
 

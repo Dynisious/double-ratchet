@@ -1,4 +1,4 @@
-//! An implementation of the double ratchet algorithm.
+//! An implementation of the [double ratchet](https://signal.org/docs/specifications/doubleratchet/) algorithm.
 //! 
 //! # Example
 //! 
