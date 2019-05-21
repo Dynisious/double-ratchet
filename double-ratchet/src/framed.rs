@@ -163,7 +163,7 @@ impl<I, C,> Framed<I, C,>
         //Remember the current length to 
         let len = self.buffer.len();
         //Read new data.
-        let eof = self.fill_buf().map_err(|e,| Error::Io(e,),)?;
+        let eof = self.fill_buf()?;
 
         //No new data could be read we wont be able to get a new message.
         if len == self.buffer.len() {
@@ -266,6 +266,11 @@ pub enum Error {
   Open(Message, crate::client::Error,),
   /// There was an error deserialising a message.
   Deserialise(serde_cbor::error::Error,),
+}
+
+impl From<io::Error> for Error {
+  #[inline]
+  fn from(from: io::Error,) -> Self { Error::Io(from,) }
 }
 
 impl From<crate::client::Error> for Error {
