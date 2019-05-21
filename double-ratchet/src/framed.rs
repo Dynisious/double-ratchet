@@ -163,7 +163,7 @@ impl<I, C,> Framed<I, C,>
         //Remember the current length to 
         let len = self.buffer.len();
         //Read new data.
-        let eof = self.fill_buf().map_err(|e,| Error::Recv(e,),)?;
+        let eof = self.fill_buf().map_err(|e,| Error::Io(e,),)?;
 
         //No new data could be read we wont be able to get a new message.
         if len == self.buffer.len() {
@@ -171,7 +171,7 @@ impl<I, C,> Framed<I, C,>
               //If we are at EOF return done.
               if self.buffer.is_empty() { Ok(Poll::Ready(None)) }
               //If we are at EOF with unused data return error.
-              else { Err(Error::Recv(ErrorKind::UnexpectedEof.into(),)) }
+              else { Err(Error::Io(ErrorKind::UnexpectedEof.into(),)) }
             //If no data was read because we are not blocking return pending.
             } else { Ok(Poll::Pending) }
         }
@@ -258,8 +258,8 @@ impl<I, C,> Drop for Framed<I, C,> {
 pub enum Error {
   /// There was an error writing a message to the IO.
   Send(Message, serde_cbor::error::Error,),
-  /// There was an error reading data from the IO.
-  Recv(io::Error,),
+  /// There was an error interacting with the IO.
+  Io(io::Error,),
   /// There was an error locking the message.
   Lock(client::Error,),
   /// There was an error opening a received message.
