@@ -34,9 +34,6 @@
 #![deny(missing_docs,)]
 #![feature(const_fn, maybe_uninit, maybe_uninit_ref, bind_by_move_pattern_guards, const_vec_new,)]
 
-#[macro_use]
-extern crate serde_derive;
-
 pub use ratchet;
 pub use ratchet::{digest, typenum, generic_array,};
 pub use x25519_dalek;

@@ -27,7 +27,6 @@ use crate::framed::Framed;
 /// 
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
-#[derive(Serialize, Deserialize,)]
 pub struct LocalClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<InnerClient<Digest, State, Algorithm, Rounds, AadLength,>>,)
   where State: 'static + ArrayLength<u8>,
     Algorithm: aead::Algorithm,
@@ -81,7 +80,6 @@ impl<D, S, A, R, L,> Client for LocalClient<D, S, A, R, L,>
 /// 
 /// Bare in mind that Both Clients must be constructed with the same ADT parameters if
 /// they are expected to work correctly.
-#[derive(Serialize, Deserialize,)]
 pub struct RemoteClient<Digest, State, Algorithm = Aes256Gcm, Rounds = consts::U1, AadLength = consts::U0,>(Box<InnerClient<Digest, State, Algorithm, Rounds, AadLength,>>,)
   where State: 'static + ArrayLength<u8>,
     Algorithm: aead::Algorithm,

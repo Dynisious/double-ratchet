@@ -10,6 +10,106 @@ use ::serde::{
 };
 use std::marker::PhantomData;
 
+impl<D, S, A, R, L,> Serialize for LocalClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: aead::Algorithm,
+    L: ArrayLength<u8>, {
+  fn serialize<Ser,>(&self, serializer: Ser,) -> Result<Ser::Ok, Ser::Error>
+    where Ser: Serializer, {
+    let mut serializer = serializer.serialize_tuple_struct(stringify!(LocalClient,), 2,)?;
+
+    serializer.serialize_field(&true,)?;
+    serializer.serialize_field(&self.0,)?;
+    serializer.end()
+  }
+}
+
+impl<'de, D, S, A, R, L,> Deserialize<'de> for LocalClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: aead::Algorithm,
+    L: ArrayLength<u8>, {
+  fn deserialize<Des,>(deserializer: Des,) -> Result<Self, Des::Error>
+    where Des: Deserializer<'de>, {
+    use std::fmt;
+    
+    struct ClientVisitor<D, S, A, R, L,>(PhantomData<(D, S, A, R, L,)>,);
+
+    impl<'de, D, S, A, R, L,> Visitor<'de> for ClientVisitor<D, S, A, R, L,>
+      where S: 'static + ArrayLength<u8>,
+        A: aead::Algorithm,
+        L: 'static + ArrayLength<u8>, {
+      type Value = LocalClient<D, S, A, R, L,>;
+
+      #[inline]
+      fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
+        write!(fmt, "a tuple of length 2",)
+      }
+      fn visit_seq<Acc,>(self, mut seq: Acc,) -> Result<Self::Value, Acc::Error,>
+        where Acc: SeqAccess<'de>, {
+        use ::serde::de::{Unexpected, Error,};
+
+        if !seq.next_element::<bool>()?.ok_or(Acc::Error::missing_field("check",),)? {
+          return Err(Acc::Error::invalid_value(Unexpected::Bool(false), &"a `true` value",))
+        }
+
+        Ok(LocalClient(seq.next_element()?.ok_or(Acc::Error::missing_field("client",),)?,))
+      }
+    }
+
+    deserializer.deserialize_tuple_struct(stringify!(LocalClient), 2, ClientVisitor(PhantomData,),)
+  }
+}
+
+impl<D, S, A, R, L,> Serialize for RemoteClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: aead::Algorithm,
+    L: ArrayLength<u8>, {
+  fn serialize<Ser,>(&self, serializer: Ser,) -> Result<Ser::Ok, Ser::Error>
+    where Ser: Serializer, {
+    let mut serializer = serializer.serialize_tuple_struct(stringify!(RemoteClient,), 2,)?;
+
+    serializer.serialize_field(&false,)?;
+    serializer.serialize_field(&self.0,)?;
+    serializer.end()
+  }
+}
+
+impl<'de, D, S, A, R, L,> Deserialize<'de> for RemoteClient<D, S, A, R, L,>
+  where S: ArrayLength<u8>,
+    A: aead::Algorithm,
+    L: ArrayLength<u8>, {
+  fn deserialize<Des,>(deserializer: Des,) -> Result<Self, Des::Error>
+    where Des: Deserializer<'de>, {
+    use std::fmt;
+    
+    struct ClientVisitor<D, S, A, R, L,>(PhantomData<(D, S, A, R, L,)>,);
+
+    impl<'de, D, S, A, R, L,> Visitor<'de> for ClientVisitor<D, S, A, R, L,>
+      where S: 'static + ArrayLength<u8>,
+        A: aead::Algorithm,
+        L: 'static + ArrayLength<u8>, {
+      type Value = RemoteClient<D, S, A, R, L,>;
+
+      #[inline]
+      fn expecting(&self, fmt: &mut fmt::Formatter,) -> fmt::Result {
+        write!(fmt, "a tuple of length 2",)
+      }
+      fn visit_seq<Acc,>(self, mut seq: Acc,) -> Result<Self::Value, Acc::Error,>
+        where Acc: SeqAccess<'de>, {
+        use ::serde::de::{Unexpected, Error,};
+
+        if seq.next_element::<bool>()?.ok_or(Acc::Error::missing_field("check",),)? {
+          return Err(Acc::Error::invalid_value(Unexpected::Bool(false), &"a `true` value",))
+        }
+
+        Ok(RemoteClient(seq.next_element()?.ok_or(Acc::Error::missing_field("client",),)?,))
+      }
+    }
+
+    deserializer.deserialize_tuple_struct(stringify!(RemoteClient), 2, ClientVisitor(PhantomData,),)
+  }
+}
+
 static FIELDS: &[&str] = &[
   "lock",
   "open",
@@ -71,7 +171,7 @@ impl<'de, D, S: 'de, A, R, L,> Deserialize<'de> for Box<InnerClient<D, S, A, R, 
       }
     }
 
-    deserializer.deserialize_tuple_struct(stringify!(Client,), FIELDS.len(), ClientVisitor(PhantomData,),)
+    deserializer.deserialize_tuple_struct(stringify!(Box<Client>,), FIELDS.len(), ClientVisitor(PhantomData,),)
   }
 }
 
