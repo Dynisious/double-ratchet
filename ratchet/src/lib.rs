@@ -17,7 +17,7 @@
 //! ratchet.fill_bytes(&mut bytes,);
 //! ```
 //! 
-//! Author -- daniel.bechaz@gmail.com  
+//! Author -- DMorgan  
 //! Last Moddified --- 2020-03-11
 
 #![feature(trusted_len, generator_trait, never_type,)]

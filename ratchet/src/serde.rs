@@ -1,6 +1,6 @@
 //! Defines serde for the [Ratchet] struct.
 //! 
-//! Author -- daniel.bechaz@gmail.com  
+//! Author -- DMorgan  
 //! Last Moddified --- 2020-03-11
 
 #![cfg(feature = "serde")]
