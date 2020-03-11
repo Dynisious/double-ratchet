@@ -18,7 +18,7 @@
 //! ```
 //! 
 //! Author -- daniel.bechaz@gmail.com  
-//! Last Moddified --- 2019-05-12
+//! Last Moddified --- 2020-03-11
 
 #![feature(trusted_len, generator_trait, never_type,)]
 #![deny(missing_docs,)]
@@ -33,22 +33,23 @@ pub use digest;
 pub use digest::generic_array;
 pub use generic_array::typenum;
 
-use typenum::{Unsigned, Add1, Diff, NonZero, bit::B1, consts,};
+use typenum::{Unsigned, Diff, Sum, NonZero, consts,};
 use generic_array::{GenericArray, ArrayLength,};
 
-#[cfg(feature = "serde")]
 mod serde;
 
 /// A HKDF Ratchet which can be used to produce cyptographically secure pseudo random bytes.
-pub struct Ratchet<Digest, State, Rounds = consts::U1,>
-  where State: ArrayLength<u8>, {
+pub struct Ratchet<Digest, StateSize, OutputSize, Rounds = consts::U1,>
+  where StateSize: ArrayLength<u8>,
+    OutputSize: ArrayLength<u8>, {
   /// The internal state used to produce the next pseudo random bytes.
-  state: ClearOnDrop<GenericArray<u8, State>>,
-  _data: PhantomData<(Digest, Rounds,)>,
+  state: ClearOnDrop<GenericArray<u8, StateSize>>,
+  _data: PhantomData<(Digest, OutputSize, Rounds,)>,
 }
 
-impl<D, S, R,> Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
+impl<D, S, O, R,> Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {
   /// Creates a new `Ratchet` from random state.
   /// 
   /// # Params
@@ -58,11 +59,11 @@ impl<D, S, R,> Ratchet<D, S, R,>
   pub fn new<Rand,>(rand: &mut Rand,) -> Self
     where Rand: RngCore + CryptoRng, {
     //Allocate the state.
-    let mut res = Self::default();
+    let mut new = Self::default();
 
-    res.reseed(rand,);
+    new.reseed(rand,);
 
-    res
+    new
   }
   /// Reseeds the `Ratchet` with random state.
   /// 
@@ -76,37 +77,59 @@ impl<D, S, R,> Ratchet<D, S, R,>
   }
 }
 
-impl<D, S, R,> Ratchet<D, S, R,>
+impl<D, S, O, R,> Ratchet<D, S, O, R,>
   where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
-    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<O>,
+    O: ArrayLength<u8>,
     R: Unsigned + NonZero,
     D::BlockSize: Clone,
-    <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
-    <S as ops::Add<B1>>::Output: ArrayLength<u8>,
-    <S as ops::Sub<B1>>::Output: Unsigned, {
+    Sum<S, O>: ArrayLength<u8>,
+    Diff<S, D::BlockSize>: Unsigned, {
   /// Generates the next pseudo random byte.
-  pub fn next(&mut self,) -> u8 {
+  pub fn next(&mut self,) -> GenericArray<u8, O> {
     //The output from the hashing round.
-    let mut okm = GenericArray::<u8, Add1<S>>::default();
+    let mut okm = GenericArray::<u8, Sum<S, O>>::default();
     let mut okm = ClearOnDrop::new(okm.as_mut(),);
 
     for _ in  0..R::USIZE {
       let (salt, ikm,) = self.state.split_at(Diff::<S, D::BlockSize>::USIZE,);
 
       //Perform the hash.
-      Hkdf::<D>::extract(None, ikm,).expand(salt, &mut okm,)
+      Hkdf::<D>::extract(None, ikm,).1.expand(salt, &mut okm,)
         .expect("Failed to expand data");
       //Update the internal state.
       self.state.copy_from_slice(&okm[..S::USIZE],);
     }
 
     //Return the output.
-    okm[Diff::<S, B1>::USIZE]
+    GenericArray::clone_from_slice(&okm[S::USIZE..],)
   }
 }
 
-impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
+impl<D, S, O, R,> Iterator for Ratchet<D, S, O, R,>
+  where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
+    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<O>,
+    O: ArrayLength<u8>,
+    R: Unsigned + NonZero,
+    D::BlockSize: Clone,
+    Sum<S, O>: ArrayLength<u8>,
+    Diff<S, D::BlockSize>: Unsigned, {
+  type Item = GenericArray<u8, O>;
+
+  #[inline]
+  fn size_hint(&self,) -> (usize, Option<usize>,) { (usize::max_value(), None,) }
+  #[inline]
+  fn next(&mut self,) -> Option<Self::Item> { Some(Ratchet::next(self,)) }
+}
+
+unsafe impl<D, S, O, R,> TrustedLen for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>,
+    Self: Iterator, {}
+
+impl<'a, D, S, O, R,> From<&'a mut [u8]> for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {
   /// Creates a new `Ratchet` from state bytes.
   /// 
   /// If `state` is too short it will be padded.  
@@ -118,17 +141,18 @@ impl<'a, D, S, R,> From<&'a mut [u8]> for Ratchet<D, S, R,>
   #[inline]
   fn from(state: &'a mut [u8],) -> Self {
     let state = ClearOnDrop::new(state,);
-    let mut res = Self::default();
-    let len = usize::min(state.len(), res.state.len(),);
+    let mut new = Self::default();
+    let len = usize::min(state.len(), new.state.len(),);
     
-    res.state[..len].copy_from_slice(&state,);
+    new.state[..len].copy_from_slice(&state,);
 
-    res
+    new
   }
 }
 
-impl<D, S, R,> Default for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
+impl<D, S, O, R,> Default for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {
   #[inline]
   fn default() -> Self {
     Self {
@@ -138,53 +162,35 @@ impl<D, S, R,> Default for Ratchet<D, S, R,>
   }
 }
 
-impl<D, S, R,> Clone for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
+impl<D, S, O, R,> Clone for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {
   #[inline]
   fn clone(&self,) -> Self {
-    let mut res = Self::default();
+    let mut new = Self::default();
 
-    res.state.copy_from_slice(&self.state,);
-
-    res
+    new.clone_from(self,); new
+  }
+  #[inline]
+  fn clone_from(&mut self, source: &Self,) {
+    self.state.copy_from_slice(&source.state,)
   }
 }
 
-impl<D, S, R,> Iterator for Ratchet<D, S, R,>
-  where D: Input + BlockInput + FixedOutput + Reset + Default + Clone,
-    S: ArrayLength<u8> + ops::Sub<D::BlockSize> + ops::Add<B1> + ops::Sub<B1>,
-    R: Unsigned + NonZero,
-    D::BlockSize: Clone,
-    <S as ops::Sub<D::BlockSize>>::Output: Unsigned,
-    <S as ops::Add<B1>>::Output: ArrayLength<u8>,
-    <S as ops::Sub<B1>>::Output: Unsigned, {
-  type Item = u8;
-  
-  #[inline]
-  fn size_hint(&self,) -> (usize, Option<usize>,) { (std::usize::MAX, None,) }
-  #[inline]
-  fn next(&mut self,) -> Option<Self::Item> { Some(self.next()) }
-}
-
-unsafe impl<D, S, R,> TrustedLen for Ratchet<D, S, R,>
+impl<D, S, O, R,> RngCore for Ratchet<D, S, O, R,>
   where S: ArrayLength<u8>,
-    Self: Iterator<Item = u8>, {}
-
-impl<D, S, R,> RngCore for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>,
-    Self: TrustedLen<Item = u8>, {
+    O: ArrayLength<u8>,
+    Self: Iterator<Item = GenericArray<u8, O>>, {
   #[inline]
   fn next_u32(&mut self,) -> u32 { self.next_u64() as u32 }
-  #[inline]
   fn next_u64(&mut self,) -> u64 {
     let mut bytes = [0; 8];
 
     self.fill_bytes(bytes.as_mut(),);
     u64::from_ne_bytes(bytes,)
   }
-  #[inline]
   fn fill_bytes(&mut self, dest: &mut [u8],) {
-    for (a, b,) in dest.iter_mut().zip(self,) { *a = b }
+    for (a, b,) in dest.iter_mut().zip(self.flatten(),) { *a = b }
   }
   #[inline]
   fn try_fill_bytes(&mut self, dest: &mut [u8],) -> Result<(), Error> {
@@ -192,47 +198,46 @@ impl<D, S, R,> RngCore for Ratchet<D, S, R,>
   }
 }
 
-impl<D, S, R,> SeedableRng for Ratchet<D, S, R,>
+impl<D, S, O, R,> SeedableRng for Ratchet<D, S, O, R,>
   where S: ArrayLength<u8>,
-    Self: TrustedLen<Item = u8>, {
+    O: ArrayLength<u8>, {
   type Seed = GenericArray<u8, S>;
 
   #[inline]
   fn from_seed(mut seed: Self::Seed,) -> Self { seed.as_mut().into() }
 }
 
-impl<D, S, R,> CryptoRng for Ratchet<D, S, R,>
+impl<D, S, O, R,> CryptoRng for Ratchet<D, S, O, R,>
   where S: ArrayLength<u8>,
-    Self: TrustedLen<Item = u8>, {}
+    O: ArrayLength<u8>, {}
 
-impl<D, S, R,> ops::Generator for Ratchet<D, S, R,>
+impl<D, S, O, R, A,> ops::Generator<A,> for Ratchet<D, S, O, R,>
   where S: ArrayLength<u8>,
-    Self: TrustedLen<Item = u8> + Unpin, {
-  type Yield = u8;
+    O: ArrayLength<u8>,
+    Self: Iterator<Item = GenericArray<u8, O>> + Unpin, {
+  type Yield = GenericArray<u8, O>;
   type Return = !;
 
-  #[inline]
-  fn resume(self: Pin<&mut Self>,) -> ops::GeneratorState<Self::Yield, Self::Return> {
-    use std::slice;
-
-    let mut byte = 0;
-
-    self.get_mut().fill_bytes(slice::from_mut(&mut byte,),);
-
-    ops::GeneratorState::Yielded(byte,)
+  fn resume(self: Pin<&mut Self>, _: A,) -> ops::GeneratorState<Self::Yield, Self::Return> {
+    match self.get_mut().next() {
+      Some(v) => ops::GeneratorState::Yielded(v,),
+      None => unsafe { core::hint::unreachable_unchecked() },
+    }
   }
 }
 
 #[cfg(test,)]
-impl<D, S, R,> PartialEq for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {
+impl<D, S, O, R,> PartialEq for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {
   #[inline]
   fn eq(&self, rhs: &Self,) -> bool { self.state == rhs.state }
 }
 
 #[cfg(test,)]
-impl<D, S, R,> Eq for Ratchet<D, S, R,>
-  where S: ArrayLength<u8>, {}
+impl<D, S, O, R,> Eq for Ratchet<D, S, O, R,>
+  where S: ArrayLength<u8>,
+    O: ArrayLength<u8>, {}
 
 #[cfg(test,)]
 mod tests {
@@ -241,24 +246,17 @@ mod tests {
 
   #[test]
   fn test_ratchet_output() {
-    use std::collections::HashSet;
-
     const ROUNDS: usize = 3000;
-    let bytes = Ratchet::<Sha1, consts::U64,>::new(&mut rand::thread_rng(),)
-      .take(ROUNDS,)
-      .collect::<HashSet<_>>();
-    
-    assert_eq!(256, bytes.len(), "Ratchet is not random",);
 
-    let mut ratchet1 = Ratchet::<Sha1, consts::U64,>::new(&mut rand::thread_rng(),);
-    let mut ratchet2 = Ratchet::<Sha1, consts::U64,>::from((*ratchet1.state.clone()).as_mut(),);
+    let mut ratchet1 = Ratchet::<Sha1, consts::U64, consts::U64,>::new(&mut rand::thread_rng(),);
+    let mut ratchet2 = Ratchet::<Sha1, consts::U64, consts::U64,>::from((*ratchet1.state.clone()).as_mut(),);
     let out1 = (&mut ratchet1).take(ROUNDS,).collect::<Box<_>>();
     let out2 = (&mut ratchet2).take(ROUNDS,).collect::<Box<_>>();
     
     assert_eq!(&ratchet1.state, &ratchet2.state, "States are not the same",);
     assert_eq!(out1, out2, "Ratchets gave different output.",);
     
-    let ratchet2 = Ratchet::<Sha1, consts::U64,>::new(&mut rand::thread_rng(),);
+    let ratchet2 = Ratchet::<Sha1, consts::U64, consts::U64,>::new(&mut rand::thread_rng(),);
     let out1 = (&mut ratchet1).take(ROUNDS,).collect::<Box<_>>();
     let out2 = ratchet2.take(ROUNDS,).collect::<Box<_>>();
     

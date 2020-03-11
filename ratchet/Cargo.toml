@@ -1,6 +1,6 @@
 [package]
 name = "ratchet"
-version = "1.1.0"
+version = "1.2.0"
 authors = ["Dynisious <daniel.bechaz@gmail.com>"]
 edition = "2018"
 description = "A cryptographicly secure pseudo random bytes stream"
@@ -9,13 +9,13 @@ documentation = "https://docs.rs/ratchet"
 repository = "https://github.com/Dynisious/double-ratchet"
 
 [dependencies]
-hkdf = "0.7"
+hkdf = "0.8"
 digest = "0.8"
-serde = { version = "1.0", optional = true }
-rand_core = "0.4"
+serde = { version = "1", optional = true }
+rand_core = "0.5"
 clear_on_drop = "0.2"
 
 [dev-dependencies]
 sha-1 = "0.8"
-rand = "0.6"
-serde_cbor = "0.9"
+rand = "0.7"
+serde_cbor = "0.11"
